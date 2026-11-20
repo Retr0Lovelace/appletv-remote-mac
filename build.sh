@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
-APP="build/Télécommande Apple TV.app"
-rm -rf "$APP" build/icon.iconset
+APP="build/Apple TV Remote.app"
+rm -rf "$APP" "build/Télécommande Apple TV.app" build/icon.iconset
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build
 
-# Les macros SwiftUI (@State...) sont fournies par Xcode.app, absentes des seuls Command Line Tools.
+# SwiftUI macros (@State...) come from Xcode.app and are missing from the Command Line Tools alone.
 PLUGIN=""
 for p in /Applications/Xcode*.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib/swift/host/plugins; do
   [ -d "$p" ] && PLUGIN="-plugin-path $p"
@@ -16,7 +16,10 @@ swiftc -O $PLUGIN -parse-as-library -swift-version 6 -target arm64-apple-macos15
 
 cp Info.plist "$APP/Contents/Info.plist"
 
-# Icône (optionnelle)
+# Localizations (English base + French)
+cp -R Resources/*.lproj "$APP/Contents/Resources/"
+
+# Icon (optional)
 if swiftc -O -o build/makeicon tools/makeicon.swift 2>/dev/null && build/makeicon build/icon.png 2>/dev/null; then
   mkdir -p build/icon.iconset
   for s in 16 32 128 256 512; do
@@ -25,8 +28,8 @@ if swiftc -O -o build/makeicon tools/makeicon.swift 2>/dev/null && build/makeico
   done
   iconutil -c icns build/icon.iconset -o "$APP/Contents/Resources/AppIcon.icns" || true
 else
-  echo "Icône ignorée"
+  echo "Icon skipped"
 fi
 
 codesign --force --deep -s - "$APP"
-echo "OK : $APP"
+echo "OK: $APP"

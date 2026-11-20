@@ -36,21 +36,23 @@ struct NowPlaying: Equatable {
     var total: Double?
     var stamp = Date()
     var artwork: NSImage?
+    /// Demo mode: the position does not advance (stable screenshots).
+    var frozen = false
     var isPlaying: Bool { state == "playing" }
     var visible: Bool { state != "idle" && state != "stopped" && !(title.isEmpty && artist.isEmpty) }
     var subtitle: String { [artist, album].filter { !$0.isEmpty }.joined(separator: " · ") }
 
     func currentPosition(at date: Date) -> Double? {
         guard let p = position else { return nil }
-        let t = isPlaying ? p + date.timeIntervalSince(stamp) : p
+        let t = isPlaying && !frozen ? p + date.timeIntervalSince(stamp) : p
         return min(max(t, 0), total ?? t)
     }
 }
 
 enum PairStep: Equatable {
     case idle
-    case starting(String)       // protocole en cours de démarrage
-    case awaitingPIN(String)    // "companion" ou "airplay"
+    case starting(String)       // protocol being started
+    case awaitingPIN(String)    // "companion" or "airplay"
     case verifying(String)
     case done
     case failed(String)
@@ -70,6 +72,8 @@ final class ATVController {
     var nowPlaying = NowPlaying()
     var apps: [ATVApp] = []
     var keyboardFocused = false
+    /// The text field only appears while a keyboard is active on the TV (or when forced for screenshots).
+    var textVisible: Bool { keyboardFocused || Snapshot.showText }
     var features: [String: Bool] = [:]
     var pairStep: PairStep = .idle
     var showPairing = false
@@ -88,10 +92,19 @@ final class ATVController {
     @ObservationIgnored private var swipeBusy = false
     @ObservationIgnored private var lastArtworkB64 = ""
 
-    var selected: ATVDevice? { devices.first { $0.identifier == selectedID } }
+    var selected: ATVDevice? {
+        guard var d = devices.first(where: { $0.identifier == selectedID }) else { return nil }
+        if Snapshot.demo { d.name = "Living Room"; d.address = "192.168.1.x" }
+        return d
+    }
+    /// Name shown in lists (anonymized in demo mode).
+    func displayName(_ d: ATVDevice) -> String {
+        guard Snapshot.demo else { return d.name }
+        return d.identifier == selectedID ? "Living Room" : "Apple TV"
+    }
     var connected: Bool { state == .connected }
 
-    /// Instance active (utilisée par le mode `--snapshot`).
+    /// Active instance (used by `--snapshot` mode).
     @ObservationIgnored nonisolated(unsafe) static weak var current: ATVController?
 
     init() {
@@ -101,9 +114,16 @@ final class ATVController {
         selectedID = UserDefaults.standard.string(forKey: "selectedID")
         helper.onEvent = { [weak self] name, data in self?.handle(name, data) }
         helper.onRestart = { [weak self] in self?.state = .helperDown }
+        if Snapshot.demo && !Snapshot.expandApps {   // the expanded-apps shot needs the vertical space
+            // Neutral fake now-playing state so screenshots never expose real viewing history.
+            var np = NowPlaying()
+            np.state = "playing"; np.title = "Big Buck Bunny"; np.artist = "Blender Foundation"; np.app = "Infuse"
+            np.position = 252; np.total = 596; np.frozen = true
+            nowPlaying = np
+        }
     }
 
-    // MARK: cycle de vie
+    // MARK: lifecycle
 
     func start() {
         guard !started else { return }
@@ -119,7 +139,7 @@ final class ATVController {
         if let d = try? JSONEncoder().encode(devices) { UserDefaults.standard.set(d, forKey: "devices") }
     }
 
-    // MARK: événements
+    // MARK: events
 
     private func handle(_ name: String, _ d: JSON) {
         switch name {
@@ -129,11 +149,11 @@ final class ATVController {
             note = ""
             Task { await rescan(); if selectedID != nil { await connect() } }
         case "helper_error":
-            note = d["message"].string ?? "Erreur de l'assistant."
+            note = d["message"].string ?? String(localized: "Helper error.")
             state = .helperDown
         case "helper_died":
             state = .helperDown
-            note = "L'assistant s'est arrêté, redémarrage…"
+            note = String(localized: "The helper stopped, restarting…")
         case "connected":
             state = .connected
             note = ""
@@ -146,7 +166,7 @@ final class ATVController {
         case "connection_lost":
             guard !userDisconnect else { return }
             state = .lost
-            note = "Connexion perdue, nouvelle tentative…"
+            note = String(localized: "Connection lost, retrying…")
             scheduleReconnect()
         case "power":
             power = d["state"].string ?? "unknown"
@@ -161,6 +181,7 @@ final class ATVController {
     }
 
     private func applyNowPlaying(_ d: JSON) {
+        if Snapshot.demo { return }
         var np = NowPlaying()
         np.state = d["state"].string ?? "idle"
         np.title = d["title"].string ?? d["series_name"].string ?? ""
@@ -170,8 +191,15 @@ final class ATVController {
         np.position = d["position"].double
         np.total = d["total_time"].double
         if let b64 = d["artwork"].string, !b64.isEmpty {
-            if b64 != lastArtworkB64 { lastArtworkB64 = b64; np.artwork = Data(base64Encoded: b64).flatMap(NSImage.init(data:)) }
-            else { np.artwork = nowPlaying.artwork }
+            if b64 != lastArtworkB64 {
+                lastArtworkB64 = b64
+                // Decoding (with size and dimension checks) happens off the main actor.
+                Task { [weak self] in
+                    let cg = await Task.detached(priority: .utility) { ArtworkDecoder.decode(base64: b64) }.value
+                    guard let self, self.lastArtworkB64 == b64, let cg else { return }
+                    self.nowPlaying.artwork = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+                }
+            } else { np.artwork = nowPlaying.artwork }
         } else { lastArtworkB64 = "" }
         nowPlaying = np
     }
@@ -186,11 +214,11 @@ final class ATVController {
                 if self.state == .connected { return }
             }
             self?.state = .idle
-            self?.note = "Appareil injoignable. Vérifiez qu'il est allumé."
+            self?.note = String(localized: "Device unreachable. Check that it is powered on.")
         }
     }
 
-    // MARK: commandes de base
+    // MARK: basic commands
 
     func rescan() async {
         guard helper.isRunning else { return }
@@ -218,7 +246,7 @@ final class ATVController {
             }
             persistDevices()
             if selectedID == nil || selected == nil, let first = devices.first { selectedID = first.identifier }
-            note = found.isEmpty ? "Aucune Apple TV trouvée sur le réseau." : ""
+            note = found.isEmpty ? String(localized: "No Apple TV found on the network.") : ""
         } catch { note = error.localizedDescription }
         state = before == .connected ? .connected : .idle
     }
@@ -244,12 +272,12 @@ final class ATVController {
         } catch {
             if !silent || state != .lost { state = .idle }
             let m = error.localizedDescription
-            note = m.contains("Non connecté") ? "" : m
-            if selected.map({ !$0.companionPaired }) == true { note = "Cette Apple TV n'est pas appairée. Ouvrez ⚙ → Appairer." }
+            note = (m == String(localized: "Not connected to an Apple TV.") || m.hasPrefix("Not connected")) ? "" : m
+            if selected.map({ !$0.companionPaired }) == true { note = String(localized: "This Apple TV is not paired. Open ⚙ → Pair…") }
         }
     }
 
-    /// Demande l'état d'alimentation après la connexion (les notifications push peuvent tarder ou manquer).
+    /// Asks for the power state after connecting (push notifications can be late or missing).
     private func refreshPower() async {
         for delay in [0.5, 2.0, 5.0] {
             try? await Task.sleep(for: .seconds(delay))
@@ -265,23 +293,27 @@ final class ATVController {
         hideDock = on
         UserDefaults.standard.set(on, forKey: "hideDock")
         NSApp.setActivationPolicy(on ? .accessory : .regular)
-        NSApp.activate()
+        // Switching the activation policy orders the window out: bring the remote back on the next turn.
+        DispatchQueue.main.async {
+            NSApp.activate()
+            NSApp.windows.first { $0.styleMask.contains(.fullSizeContentView) }?.makeKeyAndOrderFront(nil)
+        }
     }
 
     func setLaunchAtLogin(_ on: Bool) {
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {
-            flashNote("Ouverture au démarrage impossible : \(error.localizedDescription)")
+            flashNote(String(localized: "Could not enable launch at login: \(error.localizedDescription)"))
         }
         loginStatus = SMAppService.mainApp.status
         if loginStatus == .requiresApproval {
-            flashNote("Approuvez l'app dans Réglages Système → Éléments de connexion.")
+            flashNote(String(localized: "Approve the app in System Settings → Login Items."))
             SMAppService.openSystemSettingsLoginItems()
         }
     }
 
-    private func flashNote(_ m: String) {
+    func flashNote(_ m: String) {
         note = m
         Task { try? await Task.sleep(for: .seconds(8)); if note == m { note = "" } }
     }
@@ -306,7 +338,7 @@ final class ATVController {
     }
 
     func key(_ name: String, long: Bool = false) {
-        guard connected else { note = "Non connecté."; return }
+        guard connected else { note = String(localized: "Not connected."); return }
         send("key", ["name": .str(name), "long": .bool(long)])
     }
 
@@ -322,14 +354,14 @@ final class ATVController {
         }
     }
 
-    /// Si les gestes tactiles ne sont pas disponibles, on traduit en flèches.
+    /// If touch gestures are unavailable, fall back to arrow keys.
     private func fallbackArrow(_ sx: Int, _ sy: Int, _ ex: Int, _ ey: Int) {
         let dx = ex - sx, dy = ey - sy
         if abs(dx) > abs(dy) { key(dx > 0 ? "right" : "left") } else { key(dy > 0 ? "down" : "up") }
     }
 
     func muteToggle() {
-        guard connected else { note = "Non connecté."; return }
+        guard connected else { note = String(localized: "Not connected."); return }
         activity &+= 1
         Task {
             do {
@@ -345,7 +377,7 @@ final class ATVController {
 
     var canMute: Bool { features["SetVolume"] != false }
 
-    /// Charge (lazy, hors thread principal) l'icône monochrome d'une app.
+    /// Lazily loads an app's monochrome icon (network and decoding happen off the main actor).
     func loadIcon(_ app: ATVApp) async {
         let id = app.bundleID
         guard icons[id] == nil, !iconRequested.contains(id), !id.hasPrefix("com.apple.") else { return }
@@ -363,6 +395,11 @@ final class ATVController {
     func sendText(_ text: String) {
         guard connected else { return }
         send("text_set", ["text": .str(text)])
+    }
+    /// Text currently typed in the TV keyboard field (nil if unavailable).
+    func currentText() async -> String? {
+        guard connected, let r = try? await helper.request("text_get", timeout: 10) else { return nil }
+        return r.string
     }
     func clearText() { guard connected else { return }; send("text_clear") }
 
@@ -414,7 +451,7 @@ final class ATVController {
         }
     }
 
-    // MARK: appairage
+    // MARK: pairing
 
     func startPairing() {
         guard let dev = selected else { return }

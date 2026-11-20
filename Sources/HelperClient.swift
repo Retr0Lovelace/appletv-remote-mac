@@ -1,6 +1,6 @@
 import Foundation
 
-/// Valeur JSON Sendable, pour passer les réponses de l'assistant entre acteurs sans Any.
+/// Sendable JSON value, used to pass helper responses between actors without `Any`.
 enum JSON: Sendable, ExpressibleByStringLiteral, ExpressibleByIntegerLiteral,
            ExpressibleByFloatLiteral, ExpressibleByBooleanLiteral, ExpressibleByDictionaryLiteral {
     case null
@@ -44,7 +44,8 @@ enum JSON: Sendable, ExpressibleByStringLiteral, ExpressibleByIntegerLiteral,
     subscript(key: String) -> JSON { if case .obj(let o) = self { return o[key] ?? .null }; return .null }
     var string: String? { if case .str(let s) = self { return s }; return nil }
     var double: Double? { if case .num(let n) = self { return n }; return nil }
-    var int: Int? { double.map { Int($0) } }
+    /// Exact integer only: nil for non-integral, NaN or out-of-range values.
+    var int: Int? { double.flatMap { Int(exactly: $0) } }
     var bool: Bool? { if case .bool(let b) = self { return b }; return nil }
     var array: [JSON] { if case .arr(let a) = self { return a }; return [] }
 }
@@ -54,7 +55,7 @@ struct HelperError: Error, LocalizedError, Sendable {
     var errorDescription: String? { message }
 }
 
-/// Dialogue avec le processus Python (JSON lignes) : requêtes/réponses + événements.
+/// Talks to the Python process (JSON lines): requests/responses plus events.
 @MainActor
 final class HelperClient {
     var onEvent: ((String, JSON) -> Void)?
@@ -68,7 +69,7 @@ final class HelperClient {
     private var restartCount = 0
     private let reader = LineReader()
 
-    /// Où lancer l'assistant : Python embarqué dans l'app si présent, sinon l'environnement de développement (.venv).
+    /// Where to run the helper: Python embedded in the app if present, otherwise the development environment (.venv).
     struct Location {
         let python: URL
         let script: URL
@@ -76,14 +77,28 @@ final class HelperClient {
         let bundled: Bool
     }
 
-    static func projectRoot() -> URL {
-        let fallback = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("AppleTVRemote")
-        let bundle = Bundle.main.bundleURL
-        let candidate = bundle.deletingLastPathComponent().deletingLastPathComponent()
-        let py = candidate.appendingPathComponent(".venv/bin/python")
-        return FileManager.default.isExecutableFile(atPath: py.path) ? candidate : fallback
+    /// Dev fallback only: the interpreter must be owned by the current user and not writable by group or others.
+    static func isTrustedPython(_ url: URL) -> Bool {
+        var link = stat(), target = stat()
+        guard lstat(url.path, &link) == 0, stat(url.path, &target) == 0 else { return false }
+        let uid = getuid()
+        let writable = mode_t(S_IWGRP | S_IWOTH)
+        return link.st_uid == uid && target.st_uid == uid && target.st_mode & writable == 0
     }
 
+    static func projectRoot() -> URL {
+        let fm = FileManager.default
+        let fallback = fm.homeDirectoryForCurrentUser.appendingPathComponent("AppleTVRemote")
+        let bundle = Bundle.main.bundleURL
+        let candidate = bundle.deletingLastPathComponent().deletingLastPathComponent()
+        for root in [candidate, fallback] {
+            let py = root.appendingPathComponent(".venv/bin/python")
+            if fm.isExecutableFile(atPath: py.path), isTrustedPython(py) { return root }
+        }
+        return fallback
+    }
+
+    /// Kept under the original name so existing credentials and permissions carry over.
     static var supportDir: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Télécommande Apple TV")
@@ -104,22 +119,53 @@ final class HelperClient {
                         workDir: root, bundled: false)
     }
 
-    /// Fichier d'identifiants partagé par toutes les versions de l'app. Copie (sans déplacer) l'ancien
-    /// `pyatv.conf` du projet la première fois.
-    static func storageFile(legacyRoot: URL?) -> URL {
+    private static func isSymlink(_ url: URL) -> Bool {
+        var st = stat()
+        return lstat(url.path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFLNK
+    }
+
+    /// Credentials file shared by all versions of the app. Copies (without moving) the old project
+    /// `pyatv.conf` the first time. Returns nil if the path looks tampered with (symlink).
+    static func storageFile(legacyRoot: URL?) -> URL? {
         let fm = FileManager.default
         let dest = supportDir.appendingPathComponent("pyatv.conf")
+        if isSymlink(supportDir) { return nil }
         try? fm.createDirectory(at: supportDir, withIntermediateDirectories: true,
                                 attributes: [.posixPermissions: 0o700])
-        if !fm.fileExists(atPath: dest.path) {
-            let candidates = [legacyRoot, fm.homeDirectoryForCurrentUser.appendingPathComponent("AppleTVRemote")]
-                .compactMap { $0?.appendingPathComponent("pyatv.conf") }
-            if let src = candidates.first(where: { fm.fileExists(atPath: $0.path) }) {
-                try? fm.copyItem(at: src, to: dest)
-                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dest.path)
-            }
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: supportDir.path)
+        if isSymlink(dest) { return nil }
+        let legacy = [legacyRoot, fm.homeDirectoryForCurrentUser.appendingPathComponent("AppleTVRemote")]
+            .compactMap { $0?.appendingPathComponent("pyatv.conf") }
+        // The legacy file holds private keys: tighten it whether or not we copy it.
+        for f in legacy where fm.fileExists(atPath: f.path) && !isSymlink(f) {
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: f.path)
+        }
+        if !fm.fileExists(atPath: dest.path),
+           let src = legacy.first(where: { fm.fileExists(atPath: $0.path) && !isSymlink($0) }),
+           let data = try? Data(contentsOf: src) {
+            // Created with 0600 from the start, so the keys are never readable by others.
+            fm.createFile(atPath: dest.path, contents: data, attributes: [.posixPermissions: 0o600])
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dest.path)
+        }
+        if fm.fileExists(atPath: dest.path) {
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dest.path)
         }
         return dest
+    }
+
+    /// Minimal environment for the helper: nothing inherited that could redirect Python or the PATH.
+    private static func helperEnvironment(storage: URL, workDir: URL, bundled: Bool) -> [String: String] {
+        let src = ProcessInfo.processInfo.environment
+        var env: [String: String] = [
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "HOME": src["HOME"] ?? NSHomeDirectory(),
+            "TMPDIR": src["TMPDIR"] ?? NSTemporaryDirectory(),
+            "ATV_STORAGE": storage.path,
+            "ATV_ROOT": workDir.path,
+        ]
+        for k in ["LANG", "LC_ALL"] { if let v = src[k] { env[k] = v } }
+        if bundled { env["PYTHONDONTWRITEBYTECODE"] = "1" }   // never modify the signed bundle
+        return env
     }
 
     var isRunning: Bool { process?.isRunning ?? false }
@@ -130,26 +176,25 @@ final class HelperClient {
         let loc = Self.locate()
         let python = loc.python, script = loc.script
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
-            onEvent?("helper_error", ["message": "Environnement Python absent. Lancez setup.sh."])
+            onEvent?("helper_error", ["message": .str(String(localized: "Python environment missing. Run setup.sh."))])
             return
         }
-        FileHandle.standardError.write(Data("assistant : \(python.path) (\(loc.bundled ? "embarqué" : "développement"))\n".utf8))
+        guard loc.bundled || Self.isTrustedPython(python) else {
+            FileHandle.standardError.write(Data("helper: refusing untrusted development Python \(python.path)\n".utf8))
+            onEvent?("helper_error", ["message": .str(String(localized: "The development Python is not trusted (wrong owner or writable by others)."))])
+            return
+        }
+        guard let storage = Self.storageFile(legacyRoot: loc.bundled ? nil : loc.workDir) else {
+            onEvent?("helper_error", ["message": .str(String(localized: "The credentials location is a symbolic link; refusing to use it."))])
+            return
+        }
+        FileHandle.standardError.write(Data("helper: \(python.path) (\(loc.bundled ? "bundled" : "development"))\n".utf8))
         let p = Process()
         p.executableURL = python
-        p.arguments = ["-u", script.path]
-        let storage = Self.storageFile(legacyRoot: loc.bundled ? nil : loc.workDir)
+        p.arguments = ["-I", "-u", script.path]   // isolated mode: ignores PYTHON* variables, user site and cwd
         try? FileManager.default.createDirectory(at: loc.workDir, withIntermediateDirectories: true)
         p.currentDirectoryURL = loc.workDir
-        var env = ProcessInfo.processInfo.environment
-        env["ATV_ROOT"] = loc.workDir.path
-        env["ATV_STORAGE"] = storage.path
-        if loc.bundled {
-            env.removeValue(forKey: "PYTHONHOME")
-            env.removeValue(forKey: "PYTHONPATH")
-            env["PYTHONDONTWRITEBYTECODE"] = "1"   // ne pas modifier le bundle signé
-        }
-        env["PYTHONUNBUFFERED"] = "1"
-        p.environment = env
+        p.environment = Self.helperEnvironment(storage: storage, workDir: loc.workDir, bundled: loc.bundled)
         let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
         p.standardInput = inPipe
         p.standardOutput = outPipe
@@ -159,7 +204,13 @@ final class HelperClient {
         outPipe.fileHandleForReading.readabilityHandler = { [weak self] h in
             let data = h.availableData
             if data.isEmpty { h.readabilityHandler = nil; return }
-            for line in reader.feed(data) {
+            let (lines, overflow) = reader.feed(data)
+            if overflow {
+                FileHandle.standardError.write(Data("helper: output line exceeded \(LineReader.maxLine) bytes, restarting helper\n".utf8))
+                Task { @MainActor in self?.process?.terminate() }   // terminated() restarts it
+                return
+            }
+            for line in lines {
                 guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) else { continue }
                 let json = JSON(any: obj)
                 Task { @MainActor in self?.handle(json) }
@@ -178,7 +229,7 @@ final class HelperClient {
             process = p
             stdin = inPipe.fileHandleForWriting
         } catch {
-            onEvent?("helper_error", ["message": .str("Impossible de lancer l'assistant : \(error.localizedDescription)")])
+            onEvent?("helper_error", ["message": .str(String(localized: "Could not start the helper: \(error.localizedDescription)"))])
         }
     }
 
@@ -188,7 +239,7 @@ final class HelperClient {
         stdin = nil
         let waiting = pending
         pending = [:]
-        for (_, c) in waiting { c.resume(throwing: HelperError(message: "Assistant interrompu.")) }
+        for (_, c) in waiting { c.resume(throwing: HelperError(message: String(localized: "Helper interrupted."))) }
         if stopping { return }
         restartCount += 1
         onEvent?("helper_died", ["code": .num(Double(proc.terminationStatus))])
@@ -207,11 +258,16 @@ final class HelperClient {
         try? stdin?.write(contentsOf: Data("{\"id\":0,\"cmd\":\"shutdown\"}\n".utf8))
         try? stdin?.close()
         if p.isRunning {
-            // laisse une courte chance à l'arrêt propre, puis termine
+            // give the clean shutdown a short chance, then terminate
             let deadline = Date().addingTimeInterval(0.6)
             while p.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
             if p.isRunning { p.terminate() }
         }
+    }
+
+    /// Helper messages are English; the known user-visible ones have a localized counterpart.
+    static func localizedHelperError(_ message: String) -> String {
+        Bundle.main.localizedString(forKey: message, value: message, table: nil)
     }
 
     private func handle(_ msg: JSON) {
@@ -222,12 +278,12 @@ final class HelperClient {
         }
         guard let id = msg["id"].int, let c = pending.removeValue(forKey: id) else { return }
         if msg["ok"].bool == true { c.resume(returning: msg["result"]) }
-        else { c.resume(throwing: HelperError(message: msg["error"].string ?? "Erreur inconnue")) }
+        else { c.resume(throwing: HelperError(message: Self.localizedHelperError(msg["error"].string ?? "Unknown error"))) }
     }
 
     @discardableResult
     func request(_ cmd: String, _ args: [String: JSON] = [:], timeout: Double = 30) async throws -> JSON {
-        guard isRunning, let stdin else { throw HelperError(message: "Assistant non démarré.") }
+        guard isRunning, let stdin else { throw HelperError(message: String(localized: "Helper not started.")) }
         let id = nextID
         nextID += 1
         let payload: [String: Any] = ["id": id, "cmd": cmd, "args": args.mapValues { $0.any }]
@@ -235,7 +291,7 @@ final class HelperClient {
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(timeout))
             if let c = self.pending.removeValue(forKey: id) {
-                c.resume(throwing: HelperError(message: "Délai dépassé (\(cmd))."))
+                c.resume(throwing: HelperError(message: String(localized: "Timed out (\(cmd)).")))
             }
         }
         return try await withCheckedThrowingContinuation { cont in
@@ -243,20 +299,22 @@ final class HelperClient {
             do { try stdin.write(contentsOf: data) }
             catch {
                 pending.removeValue(forKey: id)
-                cont.resume(throwing: HelperError(message: "Écriture impossible : \(error.localizedDescription)"))
+                cont.resume(throwing: HelperError(message: String(localized: "Write failed: \(error.localizedDescription)")))
             }
         }
     }
 }
 
-/// Découpe un flux d'octets en lignes (accès protégé par un verrou).
+/// Splits a byte stream into lines (access protected by a lock) and caps the buffered line length.
 final class LineReader: @unchecked Sendable {
+    static let maxLine = 32 << 20   // 32 MB
     private let lock = NSLock()
     private var buffer = Data()
 
     func reset() { lock.lock(); buffer = Data(); lock.unlock() }
 
-    func feed(_ data: Data) -> [String] {
+    /// Returns the complete lines and whether the cap was exceeded (the buffer is then dropped).
+    func feed(_ data: Data) -> (lines: [String], overflow: Bool) {
         lock.lock(); defer { lock.unlock() }
         buffer.append(data)
         var lines: [String] = []
@@ -265,6 +323,10 @@ final class LineReader: @unchecked Sendable {
             buffer.removeSubrange(buffer.startIndex...idx)
             if let s = String(data: lineData, encoding: .utf8), !s.isEmpty { lines.append(s) }
         }
-        return lines
+        if buffer.count > Self.maxLine {
+            buffer = Data()
+            return (lines, true)
+        }
+        return (lines, false)
     }
 }

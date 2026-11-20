@@ -5,6 +5,8 @@ import ServiceManagement
 struct ContentView: View {
     @Environment(ATVController.self) private var tv
     @State private var text = ""
+    @State private var dictation = Dictation()
+    @State private var pulse = false
     @FocusState private var textFocused: Bool
     @State private var monitor: Any?
     @State private var ledFlash = false
@@ -32,7 +34,10 @@ struct ContentView: View {
                     NowPlayingCard().frame(width: contentWidth).padding(.top, 26)
                 }
                 appsSection.padding(.top, 26)
-                textRow.padding(.top, 18)
+                if tv.textVisible {
+                    textRow.padding(.top, 18)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
                 footer.padding(.top, 14).padding(.bottom, 34)
             }
         }
@@ -41,18 +46,34 @@ struct ContentView: View {
         .onHover { hovering = $0 }
         .contextMenu { settingsItems }
         .padding(shadowPad)
+        .ignoresSafeArea()   // no space reserved for the hidden title bar
         .background(WindowAccessor())
         .preferredColorScheme(.dark)
         .sheet(isPresented: $tv.showPairing) { PairingView() }
-        .onAppear { tv.start(); installMonitor() }
+        .onAppear { tv.start(); installMonitor(); setupDictation() }
         .onDisappear { if let m = monitor { NSEvent.removeMonitor(m); monitor = nil } }
+        .animation(.easeOut(duration: 0.25), value: tv.textVisible)
+        .onChange(of: tv.keyboardFocused) { _, focused in
+            if focused {
+                // prefill with the TV's text, then focus the field
+                Task {
+                    if let t = await tv.currentText() { text = t }
+                    try? await Task.sleep(for: .milliseconds(150))
+                    textFocused = true
+                }
+            } else {
+                dictation.stop(sendFinal: false)
+                text = ""
+                textFocused = false
+            }
+        }
         .onChange(of: tv.activity) {
             ledFlash = true
             Task { try? await Task.sleep(for: .milliseconds(260)); ledFlash = false }
         }
     }
 
-    // MARK: haut
+    // MARK: top
 
     private var topZone: some View {
         ZStack(alignment: .top) {
@@ -67,9 +88,9 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 .opacity(hovering ? 1 : 0)
                 .animation(.easeOut(duration: 0.15), value: hovering)
-                .help("Fermer")
+                .help("Close")
                 Spacer()
-                RoundKey(size: powerSize, help: tv.power == "on" ? "Mettre en veille" : "Allumer", action: { tv.powerToggle() }) {
+                RoundKey(size: powerSize, help: tv.power == "on" ? String(localized: "Put to sleep") : String(localized: "Turn on"), action: { tv.powerToggle() }) {
                     Image(systemName: "power").font(.system(size: 14, weight: .light))
                 }
             }
@@ -78,19 +99,19 @@ struct ContentView: View {
         .frame(width: remoteWidth, height: clickpadTop, alignment: .top)
     }
 
-    // MARK: boutons
+    // MARK: buttons
 
     private var buttons: some View {
         let gap = keyGapV
         return HStack(alignment: .top, spacing: keyGapH) {
             VStack(spacing: gap) {
-                SymbolKey(symbol: "chevron.left", help: "Retour") { tv.key("menu") }
-                SymbolKey(symbol: "playpause", help: "Lecture / Pause") { tv.playPause() }
+                SymbolKey(symbol: "chevron.left", help: String(localized: "Back")) { tv.key("menu") }
+                SymbolKey(symbol: "playpause", help: String(localized: "Play / Pause")) { tv.playPause() }
                 SymbolKey(symbol: tv.muted ? "speaker.slash.fill" : "speaker.slash",
-                          help: tv.muted ? "Rétablir le son" : "Muet", enabled: tv.canMute) { tv.muteToggle() }
+                          help: tv.muted ? String(localized: "Unmute") : String(localized: "Mute"), enabled: tv.canMute) { tv.muteToggle() }
             }
             VStack(spacing: gap) {
-                SymbolKey(symbol: "tv", help: "Accueil (appui long : Centre de contrôle)",
+                SymbolKey(symbol: "tv", help: String(localized: "Home (long press: Control Center)"),
                           onLong: { tv.key("home_hold") }) { tv.key("home") }
                 VolumePill(up: { tv.volumeUp() }, down: { tv.volumeDown() })
             }
@@ -99,13 +120,13 @@ struct ContentView: View {
 
     // MARK: apps
 
-    private let rowHeight: CGFloat = appSize + 3 + 11   // bouton + espace + légende
+    private let rowHeight: CGFloat = appSize + 3 + 11   // button + gap + caption
     private let rowGap: CGFloat = 8
 
-    /// Hauteur approximative de la télécommande sans la zone d'applications.
-    private var baseHeight: CGFloat { 800 + (tv.nowPlaying.visible ? 175 : 0) }
+    /// Approximate remote height without the apps area.
+    private var baseHeight: CGFloat { 800 + (tv.nowPlaying.visible ? 175 : 0) + (tv.textVisible ? 48 : 0) }
 
-    /// Nombre de rangées visibles quand « Plus » est ouvert : 3 au maximum, moins si l'écran est petit.
+    /// Number of visible rows when "More" is open: 3 at most, fewer on small screens.
     private var maxVisibleRows: Int {
         let screenH = NSScreen.main?.visibleFrame.height ?? 800
         let free = screenH - 24 - baseHeight
@@ -128,7 +149,7 @@ struct ContentView: View {
     private var appsSection: some View {
         VStack(spacing: 8) {
             if tv.apps.isEmpty {
-                Text("Applications indisponibles").font(.system(size: 10)).engraved()
+                Text("Apps unavailable").font(.system(size: 10)).engraved()
             }
             if showAllApps {
                 let n = maxVisibleRows
@@ -152,47 +173,69 @@ struct ContentView: View {
                 appRows(Array(tv.apps.prefix(6)))
             }
             if tv.apps.count > 6 {
-                Button(showAllApps ? "Moins" : "Plus") { withAnimation(.easeOut(duration: 0.2)) { showAllApps.toggle() } }
+                Button(showAllApps ? String(localized: "Less") : String(localized: "More")) { withAnimation(.easeOut(duration: 0.2)) { showAllApps.toggle() } }
                     .buttonStyle(.plain).font(.system(size: 10, weight: .semibold)).engraved()
             }
         }
     }
 
-    // MARK: texte
+    // MARK: text
 
     private var textRow: some View {
         HStack(spacing: 6) {
-            TextField("Texte", text: $text)
+            TextField("Text", text: $text)
                 .textFieldStyle(.plain).font(.system(size: 12))
                 .foregroundStyle(.white)
                 .focused($textFocused)
                 .onSubmit { tv.sendText(text) }
             Button { tv.clearText(); text = "" } label: {
                 Image(systemName: "delete.left").font(.system(size: 11)).foregroundStyle(.white.opacity(0.6))
-            }.buttonStyle(.plain).help("Effacer")
+            }.buttonStyle(.plain).help("Clear")
+            micButton
             Button { tv.sendText(text) } label: {
                 Image(systemName: "paperplane.fill").font(.system(size: 11)).foregroundStyle(.white.opacity(0.9))
-            }.buttonStyle(.plain).help("Envoyer")
+            }.buttonStyle(.plain).help("Send")
         }
         .padding(.horizontal, 12)
         .frame(width: contentWidth, height: 30)
         .background(Color(white: 0.08), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(tv.keyboardFocused ? Theme.accent : .white.opacity(0.08),
-                                        lineWidth: tv.keyboardFocused ? 1.5 : 1))
-        .shadow(color: tv.keyboardFocused ? Theme.accent.opacity(0.6) : .clear, radius: 5)
-        .help(tv.keyboardFocused ? "Clavier actif sur la TV" : "Envoyer du texte à la TV")
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Theme.accent.opacity(0.8), lineWidth: 1.5))
+        .shadow(color: Theme.accent.opacity(0.5), radius: 5)
+        .help("Keyboard active on the TV")
     }
 
-    // MARK: pied
+    /// Voice dictation (⌘D). While listening, the icon pulses between red and white.
+    private var micButton: some View {
+        Button { dictation.toggle() } label: {
+            Image(systemName: dictation.isListening ? "mic.fill" : "mic").font(.system(size: 11))
+                .foregroundStyle(dictation.isListening ? (pulse ? Color.red : Color.white.opacity(0.9)) : .white.opacity(0.6))
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut("d", modifiers: .command)
+        .help(dictation.isListening ? String(localized: "Stop dictation (⌘D)") : String(localized: "Dictate text (⌘D)"))
+        .onChange(of: dictation.isListening) { _, on in
+            if on { withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) { pulse = true } }
+            else { withAnimation(.none) { pulse = false } }
+        }
+    }
+
+    private func setupDictation() {
+        let controller = tv
+        dictation.onText = { text = $0 }
+        dictation.onSend = { controller.sendText($0) }
+        dictation.onProblem = { controller.flashNote($0) }
+    }
+
+    // MARK: footer
 
     private var statusText: String {
         switch tv.state {
-        case .helperDown: "Assistant arrêté"
-        case .idle: tv.selected == nil ? "Aucune Apple TV" : "Déconnectée"
-        case .scanning: "Recherche…"
-        case .connecting: "Connexion…"
-        case .connected: tv.power == "off" ? "En veille" : "Connectée"
-        case .lost: "Connexion perdue"
+        case .helperDown: String(localized: "Helper stopped")
+        case .idle: tv.selected == nil ? String(localized: "No Apple TV") : String(localized: "Disconnected")
+        case .scanning: String(localized: "Searching…")
+        case .connecting: String(localized: "Connecting…")
+        case .connected: tv.power == "off" ? String(localized: "Asleep") : String(localized: "Connected")
+        case .lost: String(localized: "Connection lost")
         }
     }
 
@@ -203,9 +246,9 @@ struct ContentView: View {
                     .multilineTextAlignment(.center).frame(width: contentWidth)
             }
             Menu {
-                if tv.devices.isEmpty { Text("Aucune Apple TV") }
+                if tv.devices.isEmpty { Text("No Apple TV") }
                 ForEach(tv.devices) { d in
-                    Button(d.name + (d.online ? "" : " (hors ligne)") + (d.identifier == tv.selectedID ? " ✓" : "")) {
+                    Button(tv.displayName(d) + (d.online ? "" : String(localized: " (offline)")) + (d.identifier == tv.selectedID ? " ✓" : "")) {
                         tv.select(d.identifier)
                     }
                 }
@@ -220,25 +263,25 @@ struct ContentView: View {
                 Menu { settingsItems } label: {
                     Image(systemName: "gearshape").font(.system(size: 9)).engraved()
                 }
-                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().help("Réglages")
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().help("Settings")
             }
         }
     }
 
     @ViewBuilder private var settingsItems: some View {
-        Button("Rechercher des Apple TV") { Task { await tv.rescan() } }
-        Button("Appairer…") { tv.pairStep = .idle; tv.showPairing = true }.disabled(tv.selected == nil)
-        Button("Reconnecter") { Task { await tv.connect() } }.disabled(tv.selected == nil)
+        Button("Search for Apple TVs") { Task { await tv.rescan() } }
+        Button("Pair…") { tv.pairStep = .idle; tv.showPairing = true }.disabled(tv.selected == nil)
+        Button("Reconnect") { Task { await tv.connect() } }.disabled(tv.selected == nil)
         Divider()
-        Button("Oublier cet appareil", role: .destructive) { tv.forgetSelected() }.disabled(tv.selected == nil)
-        Button("Redémarrer l'assistant") { tv.restartHelper() }
+        Button("Forget this device", role: .destructive) { tv.forgetSelected() }.disabled(tv.selected == nil)
+        Button("Restart helper") { tv.restartHelper() }
         Divider()
         SettingsToggles()
         Divider()
-        Button("Quitter") { NSApp.terminate(nil) }
+        Button("Quit") { NSApp.terminate(nil) }
     }
 
-    // MARK: raccourcis clavier
+    // MARK: keyboard shortcuts
 
     private func installMonitor() {
         guard monitor == nil else { return }
@@ -288,7 +331,7 @@ struct NowPlayingCard: View {
                 .background(Color(white: 0.15))
                 .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(np.title.isEmpty ? "Lecture en cours" : np.title).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                    Text(np.title.isEmpty ? String(localized: "Now playing") : np.title).font(.system(size: 11, weight: .semibold)).lineLimit(1)
                     if !np.subtitle.isEmpty { Text(np.subtitle).font(.system(size: 9.5)).foregroundStyle(.secondary).lineLimit(1) }
                     if !np.app.isEmpty { Text(np.app).font(.system(size: 9)).foregroundStyle(.tertiary).lineLimit(1) }
                 }
@@ -342,17 +385,17 @@ struct PairingView: View {
     var body: some View {
         @Bindable var tv = tv
         VStack(alignment: .leading, spacing: 12) {
-            Text("Appairage").font(.headline)
+            Text("Pairing").font(.headline)
             Picker("Apple TV", selection: Binding(get: { tv.selectedID ?? "" }, set: { tv.select($0) })) {
-                ForEach(tv.devices) { Text($0.name).tag($0.identifier) }
+                ForEach(tv.devices) { Text(tv.displayName($0)).tag($0.identifier) }
             }
             .disabled(isBusy)
             if let d = tv.selected {
                 Text("\(d.model) · \(d.address)").font(.caption).foregroundStyle(.secondary)
-                Text("Companion : \(d.companionPaired ? "appairé" : "non appairé")  ·  AirPlay : \(d.airplayPaired ? "appairé" : "non appairé")")
+                Text("Companion: \(d.companionPaired ? String(localized: "paired") : String(localized: "not paired"))  ·  AirPlay: \(d.airplayPaired ? String(localized: "paired") : String(localized: "not paired"))")
                     .font(.caption).foregroundStyle(.secondary)
                 if d.companionPairing == "disabled" {
-                    Text("L'appairage est désactivé sur cette Apple TV. Sur la TV : Réglages → AirPlay et HomeKit → Autoriser l'accès → « Tout le monde » ou « Toute personne sur le même réseau ».")
+                    Text("Pairing is disabled on this Apple TV. On the TV: Settings → AirPlay and HomeKit → Allow Access → \"Everyone\" or \"Anyone on the Same Network\".")
                         .font(.caption).foregroundStyle(.orange)
                 }
             }
@@ -370,51 +413,51 @@ struct PairingView: View {
     private var isBusy: Bool {
         switch tv.pairStep { case .idle, .done, .failed: false; default: true }
     }
-    private var closeLabel: String { tv.pairStep == .done ? "Terminer" : "Annuler" }
+    private var closeLabel: String { tv.pairStep == .done ? String(localized: "Done") : String(localized: "Cancel") }
 
     @ViewBuilder private var stepView: some View {
         switch tv.pairStep {
         case .idle:
-            Text("Un code à 4 chiffres va s'afficher sur la TV, d'abord pour Companion (étape 1/2), puis pour AirPlay (étape 2/2).")
+            Text("A 4-digit code will appear on the TV, first for Companion (step 1/2), then for AirPlay (step 2/2).")
                 .font(.callout).fixedSize(horizontal: false, vertical: true)
-            Button("Appairer") { pin = ""; tv.startPairing() }
+            Button("Pair") { pin = ""; tv.startPairing() }
                 .buttonStyle(.borderedProminent).disabled(tv.selected == nil)
         case .starting(let p):
-            HStack { ProgressView().controlSize(.small); Text("Étape \(num(p))/2 · \(name(p)) : demande du code…") }
+            HStack { ProgressView().controlSize(.small); Text("Step \(num(p))/2 · \(name(p)): requesting code…") }
         case .awaitingPIN(let p):
-            Text("Étape \(num(p))/2 · \(name(p))").font(.subheadline.weight(.semibold))
+            Text("Step \(num(p))/2 · \(name(p))").font(.subheadline.weight(.semibold))
             Text(p == "companion"
-                 ? "Saisissez le code à 4 chiffres affiché sur la TV pour autoriser les commandes."
-                 : "Saisissez le nouveau code à 4 chiffres affiché sur la TV pour autoriser la lecture en cours.")
+                 ? String(localized: "Enter the 4-digit code shown on the TV to authorize commands.")
+                 : String(localized: "Enter the new 4-digit code shown on the TV to authorize now-playing info."))
                 .font(.callout).fixedSize(horizontal: false, vertical: true)
             HStack {
                 TextField("0000", text: $pin).textFieldStyle(.roundedBorder).frame(width: 90)
                     .onSubmit { tv.submitPIN(pin); pin = "" }
-                Button("Valider") { tv.submitPIN(pin); pin = "" }
+                Button("Confirm") { tv.submitPIN(pin); pin = "" }
                     .buttonStyle(.borderedProminent).disabled(pin.count != 4)
             }
         case .verifying(let p):
-            HStack { ProgressView().controlSize(.small); Text("Étape \(num(p))/2 · vérification…") }
+            HStack { ProgressView().controlSize(.small); Text("Step \(num(p))/2 · verifying…") }
         case .done:
-            Label("Appairage terminé.", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+            Label("Pairing complete.", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
         case .failed(let m):
             Text(m).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
-            Button("Réessayer") { pin = ""; tv.startPairing() }
+            Button("Try again") { pin = ""; tv.startPairing() }
         }
     }
     private func num(_ p: String) -> Int { p == "companion" ? 1 : 2 }
     private func name(_ p: String) -> String { p == "companion" ? "Companion" : "AirPlay" }
 }
 
-/// Réglages communs (menu ⚙, clic droit, barre des menus).
+/// Shared settings (⚙ menu, right-click, menu bar).
 struct SettingsToggles: View {
     @Environment(ATVController.self) private var tv
 
     var body: some View {
-        Toggle(tv.loginStatus == .requiresApproval ? "Ouvrir au démarrage (à approuver)" : "Ouvrir au démarrage",
+        Toggle(tv.loginStatus == .requiresApproval ? String(localized: "Open at login (needs approval)") : String(localized: "Open at login"),
                isOn: Binding(get: { tv.loginStatus == .enabled || tv.loginStatus == .requiresApproval },
                              set: { tv.setLaunchAtLogin($0) }))
-        Toggle("Masquer l'icône du Dock",
+        Toggle("Hide Dock icon",
                isOn: Binding(get: { tv.hideDock }, set: { tv.setHideDock($0) }))
     }
 }

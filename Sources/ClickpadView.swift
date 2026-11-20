@@ -4,13 +4,13 @@ import AppKit
 enum PadDirection: Sendable { case up, down, left, right }
 enum PadZone: Sendable, Equatable { case center, arrow(PadDirection) }
 
-/// Rapport inner/outer du clickpad (cercle intérieur = select).
+/// Inner/outer ratio of the clickpad (inner circle = select).
 let clickpadInnerRatio: CGFloat = 0.55
 
-/// Surface tactile façon Siri Remote : glisser = swipe, clic au centre = select,
-/// clic sur le bord = flèche (clickwheel), défilement à deux doigts = swipe.
+/// Siri Remote style touch surface: drag = swipe, click in the centre = select,
+/// click on the edge = arrow (clickwheel), two-finger scroll = swipe.
 final class ClickpadNSView: NSView {
-    var onSwipe: ((Int, Int, Int, Int) -> Void)?   // coordonnées 0...1000
+    var onSwipe: ((Int, Int, Int, Int) -> Void)?   // coordinates 0...1000
     var onClick: (() -> Void)?
     var onArrow: ((PadDirection) -> Void)?
     var onLongPress: (() -> Void)?

@@ -10,16 +10,16 @@ enum Theme {
 }
 
 let remoteWidth: CGFloat = 240
-let buttonSize: CGFloat = 70      // ~29 % de la largeur
-let keyGapH: CGFloat = 16         // ~7 %
-let keyGapV: CGFloat = 10         // ~4 %
-let clickpadSize: CGFloat = 206   // ~86 %
-let clickpadTop: CGFloat = 88     // ~37 % (le ⏻ est au-dessus du pavé)
-let powerSize: CGFloat = 34       // ~14 %
-let appSize: CGFloat = 48         // ~20 %
+let buttonSize: CGFloat = 70      // ~29% of the width
+let keyGapH: CGFloat = 16         // ~7%
+let keyGapV: CGFloat = 10         // ~4%
+let clickpadSize: CGFloat = 206   // ~86%
+let clickpadTop: CGFloat = 88     // ~37% (the power button sits above the pad)
+let powerSize: CGFloat = 34       // ~14%
+let appSize: CGFloat = 48         // ~20%
 let shadowPad: CGFloat = 26
 
-// MARK: fenêtre transparente
+// MARK: transparent window
 
 struct WindowAccessor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
@@ -36,14 +36,64 @@ struct WindowAccessor: NSViewRepresentable {
             for b in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
                 w.standardWindowButton(b)?.isHidden = true
             }
+            WindowAccessor.allowUnderMenuBar(w)
         }
         return v
     }
     func updateNSView(_ nsView: NSView, context: Context) {}
+
+    /// AppKit stops the top of a titlebar window from going under the menu bar, which leaves the remote
+    /// ~50 pt lower. We add a `constrainFrameRect:toScreen:` override to SwiftUI's window class; it only
+    /// applies to our window (tagged by an associated object): the frame's top may rise up to
+    /// `shadowPad` above the visible area, so the aluminium touches the menu bar.
+    /// (Changing the instance's isa breaks the KVO that AutoFill uses once the text field gets focus.)
+    /// If the window class is a KVO subclass (`NSKVONotifying_*`), the real class is patched instead,
+    /// and only after checking the method signature; otherwise we silently do nothing.
+    nonisolated(unsafe) private static var patchedClasses = Set<ObjectIdentifier>()
+    nonisolated(unsafe) private static let marker = UnsafeRawPointer(bitPattern: 0xF1EE)!
+
+    @MainActor static func allowUnderMenuBar(_ w: NSWindow) {
+        objc_setAssociatedObject(w, marker, true, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        guard var cls = object_getClass(w) else { return }
+        while NSStringFromClass(cls).hasPrefix("NSKVONotifying_"), let sup = class_getSuperclass(cls) { cls = sup }
+        guard !patchedClasses.contains(ObjectIdentifier(cls)) else { return }
+        let sel = NSSelectorFromString("constrainFrameRect:toScreen:")
+        guard let method = class_getInstanceMethod(cls, sel),
+              let enc = method_getTypeEncoding(method),
+              String(cString: enc).hasPrefix("{CGRect=") else { return }
+        patchedClasses.insert(ObjectIdentifier(cls))
+        let original = method_getImplementation(method)
+        let pad = shadowPad
+        let marker = Self.marker
+        let block = Self.makeConstrainBlock(original: original, sel: sel, pad: pad, marker: marker)
+        class_replaceMethod(cls, sel, imp_implementationWithBlock(block), enc)
+    }
+
+    /// Block called back by AppKit: created outside the main actor so it does not inherit its isolation
+    /// (otherwise the Swift 6 runtime traps if the call arrives on another thread).
+    private nonisolated static func makeConstrainBlock(original: IMP, sel: Selector, pad: CGFloat,
+                                                       marker: UnsafeRawPointer) -> @convention(block) (NSWindow, NSRect, NSScreen?) -> NSRect {
+        return { win, frame, screen in
+            typealias Fn = @convention(c) (AnyObject, Selector, NSRect, NSScreen?) -> NSRect
+            nonisolated(unsafe) let base = unsafeBitCast(original, to: Fn.self)
+            nonisolated(unsafe) let marker = marker
+            nonisolated(unsafe) let screen = screen
+            // window frames can only be computed on the main thread
+            return MainActor.assumeIsolated {
+                guard objc_getAssociatedObject(win, marker) != nil, let screen = screen ?? win.screen else {
+                    return base(win, sel, frame, screen)
+                }
+                var f = frame
+                let limit = screen.visibleFrame.maxY + pad
+                if f.maxY > limit { f.origin.y = limit - f.height }
+                return f
+            }
+        }
+    }
 }
 
-/// Zone de saisie de la fenêtre : SwiftUI ignore `isMovableByWindowBackground`,
-/// on lance donc le déplacement nous-mêmes depuis l'aluminium.
+/// Window drag area: SwiftUI ignores `isMovableByWindowBackground`,
+/// so we start the drag ourselves from the aluminium.
 struct WindowDragHandle: NSViewRepresentable {
     final class DragView: NSView {
         override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
@@ -53,18 +103,18 @@ struct WindowDragHandle: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
-// MARK: corps en aluminium
+// MARK: aluminium body
 
 struct RemoteBody: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 34, style: .continuous)
         ZStack {
-            // aluminium sablé
+            // brushed aluminium
             shape.fill(LinearGradient(stops: [.init(color: Color(red: 0.929, green: 0.929, blue: 0.937), location: 0),
                                               .init(color: Color(red: 0.788, green: 0.788, blue: 0.804), location: 0.55),
                                               .init(color: Color(red: 0.710, green: 0.710, blue: 0.729), location: 1)],
                                       startPoint: .top, endPoint: .bottom))
-            // arrondi des flancs
+            // rounded sides
             shape.fill(LinearGradient(stops: [.init(color: .black.opacity(0.07), location: 0),
                                               .init(color: .black.opacity(0.0), location: 0.06),
                                               .init(color: .white.opacity(0.14), location: 0.30),
@@ -79,7 +129,7 @@ struct RemoteBody: View {
     }
 }
 
-// MARK: boutons ronds
+// MARK: round buttons
 
 struct BlackDisc: View {
     var pressed = false
@@ -92,7 +142,7 @@ struct BlackDisc: View {
     }
 }
 
-/// Bouton rond noir, appui court et appui long optionnel.
+/// Round black button, short press and optional long press.
 struct RoundKey<Label: View>: View {
     var size: CGFloat = buttonSize
     var enabled = true
@@ -146,7 +196,7 @@ struct SymbolKey: View {
     }
 }
 
-/// Capsule de volume : deux zones de clic (+ en haut, − en bas).
+/// Volume capsule: two click zones (+ on top, − below).
 struct VolumePill: View {
     let up: () -> Void
     let down: () -> Void
@@ -161,8 +211,8 @@ struct VolumePill: View {
                                                            startPoint: .top, endPoint: .center), lineWidth: 1))
                 .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
             VStack(spacing: 0) {
-                half(symbol: "plus", pressed: $pressedUp, help: "Volume +", action: up)
-                half(symbol: "minus", pressed: $pressedDown, help: "Volume −", action: down)
+                half(symbol: "plus", pressed: $pressedUp, help: String(localized: "Volume +"), action: up)
+                half(symbol: "minus", pressed: $pressedDown, help: String(localized: "Volume −"), action: down)
             }
             .clipShape(shape)
         }
@@ -221,12 +271,12 @@ struct Clickpad: View {
                 RingSegment(dir: d).fill(.white.opacity(0.12))
                     .clipShape(Circle())
             }
-            // points
+            // dots
             ForEach(Array([(0.0, -1.0), (0.0, 1.0), (-1.0, 0.0), (1.0, 0.0)].enumerated()), id: \.offset) { _, v in
                 Circle().fill(.white.opacity(0.85)).frame(width: 3.5, height: 3.5)
                     .offset(x: v.0 * size * 0.39, y: v.1 * size * 0.39)
             }
-            // cercle intérieur
+            // inner circle
             Circle().fill(zone == .center ? Color(white: 0.15) : Color(white: 0.04))
                 .overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.14), .white.opacity(0.02)],
                                                               startPoint: .top, endPoint: .bottom), lineWidth: 1))
@@ -258,14 +308,14 @@ struct StatusLED: View {
     }
 }
 
-// MARK: icône d'app
+// MARK: app icon
 
 struct AppButton: View {
     @Environment(ATVController.self) private var tv
     let app: ATVApp
 
     private static let symbols: [(String, String)] = [
-        // les identifiants Apple commencent presque tous par « com.apple.TV… » : du plus précis au plus général
+        // Apple identifiers almost all start with "com.apple.TV...": from most specific to most general
         ("appstore", "a.square"), ("music", "music.note"), ("photos", "photo"),
         ("preferences", "gearshape"), ("settings", "gearshape"), ("tvwatchlist", "tv"),
         ("fitness", "figure.run"), ("arcade", "gamecontroller"), ("podcasts", "mic"),
@@ -283,7 +333,7 @@ struct AppButton: View {
         VStack(spacing: 3) {
             RoundKey(size: appSize, help: app.name, action: { tv.launch(app) }) {
                 if let img = tv.icons[app.bundleID] {
-                    // le logo remplit tout le bouton, légèrement agrandi pour rogner le liseré de l'icône
+                    // the logo fills the whole button, slightly enlarged to crop the icon border
                     Image(nsImage: img).resizable().scaledToFill()
                         .scaleEffect(1.12)
                         .frame(width: appSize, height: appSize)
@@ -304,7 +354,7 @@ struct AppButton: View {
 }
 
 extension View {
-    /// Texte « gravé » dans l'aluminium.
+    /// Text "engraved" in the aluminium.
     func engraved() -> some View {
         self.foregroundStyle(Theme.engraved)
             .shadow(color: .white.opacity(0.65), radius: 0, x: 0, y: 1)

@@ -1,0 +1,5 @@
+CFBundleName = "Télécommande Apple TV";
+CFBundleDisplayName = "Télécommande Apple TV";
+NSLocalNetworkUsageDescription = "Télécommande Apple TV a besoin d'accéder au réseau local pour trouver et piloter vos Apple TV.";
+NSMicrophoneUsageDescription = "Télécommande Apple TV utilise le micro pour dicter du texte à envoyer au clavier de l'Apple TV.";
+NSSpeechRecognitionUsageDescription = "Télécommande Apple TV utilise la reconnaissance vocale (uniquement sur ce Mac) pour transformer votre voix en texte pour l'Apple TV.";

@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Processus d'aide : pilote une Apple TV via pyatv, JSON lignes sur stdin/stdout.
+"""Helper process: drives an Apple TV through pyatv, JSON lines on stdin/stdout.
 
-Requete : {"id":1,"cmd":"key","args":{"name":"up"}}
-Reponse : {"id":1,"ok":true,"result":...} ou {"id":1,"ok":false,"error":"..."}
-Evenement : {"event":"now_playing","data":{...}}
-Tout le journal va sur stderr.
+Request:  {"id":1,"cmd":"key","args":{"name":"up"}}
+Response: {"id":1,"ok":true,"result":...} or {"id":1,"ok":false,"error":"..."}
+Event:    {"event":"now_playing","data":{...}}
+All logging goes to stderr.
 """
+import os
+
+# Files created by this process (pairing credentials) must never be readable by others.
+os.umask(0o077)
+
 import asyncio
 import base64
 import json
 import logging
-import os
 import sys
 import traceback
 from pathlib import Path
@@ -24,7 +28,7 @@ from pyatv.interface import (AudioListener, DeviceListener, KeyboardListener,
                              PowerListener, PushListener)
 from pyatv.storage.file_storage import FileStorage
 
-# stdout est reserve au protocole : tout print() parasite part sur stderr.
+# stdout is reserved for the protocol: any stray print() goes to stderr.
 OUT = sys.stdout
 sys.stdout = sys.stderr
 logging.basicConfig(stream=sys.stderr, level=logging.INFO,
@@ -34,8 +38,32 @@ log = logging.getLogger("atv_helper")
 ROOT = Path(os.environ.get("ATV_ROOT", str(Path.home() / "AppleTVRemote")))
 STORAGE_FILE = Path(os.environ.get("ATV_STORAGE") or (ROOT / "pyatv.conf"))
 
+# Largest artwork forwarded to the app (bytes of image data).
+MAX_ARTWORK_BYTES = 2 * 1024 * 1024
+
+# Commands the app may call. Anything else is rejected, including helper internals.
+ALLOWED_COMMANDS = frozenset({
+    "scan", "connect", "disconnect", "forget",
+    "pair_begin", "pair_pin", "pair_cancel",
+    "key", "swipe",
+    "text_set", "text_get", "text_clear",
+    "apps", "launch",
+    "power_on", "power_off", "power_state",
+    "mute_toggle",
+    "shutdown",
+})
+
 PROTOCOLS = {"companion": Protocol.Companion, "airplay": Protocol.AirPlay,
              "mrp": Protocol.MRP, "raop": Protocol.RAOP, "dmap": Protocol.DMAP}
+
+
+def secure_storage() -> None:
+    """Credentials hold private keys: keep the file owner-only."""
+    try:
+        if STORAGE_FILE.exists():
+            os.chmod(STORAGE_FILE, 0o600)
+    except OSError as ex:
+        log.warning("chmod on credentials failed: %s", ex)
 
 
 def pyatv_version() -> str:
@@ -77,11 +105,11 @@ class Listener(PushListener, DeviceListener, PowerListener, AudioListener,
 
     # device
     def connection_lost(self, exception: Exception) -> None:
-        log.warning("connexion perdue: %s", exception)
+        log.warning("connection lost: %s", exception)
         self.h.on_lost(str(exception))
 
     def connection_closed(self) -> None:
-        log.info("connexion fermee")
+        log.info("connection closed")
 
     # power
     def powerstate_update(self, old_state, new_state) -> None:
@@ -106,7 +134,7 @@ class Listener(PushListener, DeviceListener, PowerListener, AudioListener,
 class Helper:
     def __init__(self) -> None:
         self.loop = asyncio.get_running_loop()
-        STORAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STORAGE_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.storage = FileStorage(str(STORAGE_FILE), self.loop)
         self.configs: Dict[str, Any] = {}
         self.atv: Optional[pyatv.interface.AppleTV] = None
@@ -120,6 +148,7 @@ class Helper:
 
     async def start(self) -> None:
         await self.storage.load()
+        secure_storage()
 
     # ---------------------------------------------------------------- scan
     async def scan(self, timeout: int = 5, **_) -> Any:
@@ -127,7 +156,7 @@ class Helper:
         out = []
         for c in found:
             protos = {s.protocol for s in c.services}
-            # Ne garde que les vraies Apple TV / HomePod (Companion, MRP ou AirPlay tvOS).
+            # Only keep real Apple TVs / HomePods (Companion or MRP).
             if not c.identifier:
                 continue
             self.configs[c.identifier] = c
@@ -161,17 +190,17 @@ class Helper:
                 self.configs[identifier] = found[0]
                 return found[0]
         except Exception as ex:
-            log.warning("scan cible echoue: %s", ex)
+            log.warning("targeted scan failed: %s", ex)
         cfg = self.configs.get(identifier)
         if cfg is None:
-            raise HelperError("Appareil introuvable sur le réseau.")
+            raise HelperError("Device not found on the network.")
         return cfg
 
     # -------------------------------------------------------------- pairing
     async def pair_begin(self, identifier: str, protocol: str, **_) -> Any:
         proto = PROTOCOLS.get(str(protocol).lower())
         if proto is None:
-            raise HelperError(f"Protocole inconnu : {protocol}")
+            raise HelperError(f"Unknown protocol: {protocol}")
         await self.pair_cancel()
         cfg = await self.get_config(identifier)
         handler = await pyatv.pair(cfg, proto, self.loop, storage=self.storage)
@@ -182,7 +211,7 @@ class Helper:
 
     async def pair_pin(self, pin: str, **_) -> Any:
         if not self.pairing:
-            raise HelperError("Aucun appairage en cours.")
+            raise HelperError("No pairing in progress.")
         handler, identifier, proto = self.pairing
         handler.pin(str(pin).strip())
         try:
@@ -190,11 +219,12 @@ class Helper:
             paired = handler.has_paired
             if paired:
                 await self.storage.save()
+                secure_storage()
         finally:
             await handler.close()
             self.pairing = None
         if not paired:
-            raise HelperError("Appairage refusé (code incorrect ?).")
+            raise HelperError("Pairing refused (wrong code?).")
         return {"paired": True, "protocol": proto}
 
     async def pair_cancel(self, **_) -> Any:
@@ -216,9 +246,10 @@ class Helper:
         settings = await self.storage.get_settings(cfg)
         await self.storage.remove_settings(settings)
         await self.storage.save()
+        secure_storage()
         return True
 
-    # ------------------------------------------------------------ connexion
+    # ------------------------------------------------------------ connection
     async def connect(self, identifier: str, **_) -> Any:
         await self.disconnect(quiet=True)
         self.user_disconnect = False
@@ -235,7 +266,7 @@ class Helper:
             try:
                 getattr(atv, attr).listener = self.listener
             except Exception as ex:
-                log.info("pas de listener %s: %s", name, ex)
+                log.info("no %s listener: %s", name, ex)
         try:
             atv.push_updater.start()
         except Exception as ex:
@@ -277,7 +308,7 @@ class Helper:
             if self.atv:
                 await self.publish_playing(await self.atv.metadata.playing())
         except Exception as ex:
-            log.info("playing initial: %s", ex)
+            log.info("initial playing: %s", ex)
 
     def on_lost(self, reason: str) -> None:
         ident = self.current_id
@@ -306,10 +337,10 @@ class Helper:
 
     def need(self):
         if not self.atv:
-            raise HelperError("Non connecté à une Apple TV.")
+            raise HelperError("Not connected to an Apple TV.")
         return self.atv
 
-    # ---------------------------------------------------------------- touches
+    # ------------------------------------------------------------------ keys
     async def key(self, name: str, long: bool = False, **_) -> Any:
         atv = self.need()
         name = str(name).lower()
@@ -345,7 +376,7 @@ class Helper:
         }
         fn = plain.get(name)
         if fn is None:
-            raise HelperError(f"Touche inconnue : {name}")
+            raise HelperError(f"Unknown key: {name}")
         await fn()
         return True
 
@@ -364,7 +395,7 @@ class Helper:
         await atv.touch.click(a)
         return True
 
-    # ------------------------------------------------------------------ texte
+    # ------------------------------------------------------------------ text
     async def text_set(self, text: str, **_) -> Any:
         await self.need().keyboard.text_set(str(text))
         return True
@@ -393,7 +424,7 @@ class Helper:
         await self.need().apps.launch_app(str(bundle_id))
         return True
 
-    # ------------------------------------------------------------- alimentation
+    # ------------------------------------------------------------------ power
     async def power_on(self, **_) -> Any:
         await self.need().power.turn_on()
         return True
@@ -410,7 +441,7 @@ class Helper:
         return True
 
     async def mute_toggle(self, **_) -> Any:
-        """Muet émulé : mémorise le volume, passe à 0, puis restaure au second appel."""
+        """Emulated mute: remembers the volume, sets it to 0, then restores it on the second call."""
         atv = self.need()
         try:
             from pyatv.const import FeatureName, FeatureState
@@ -418,14 +449,14 @@ class Helper:
         except Exception:
             ok = False
         if not ok:
-            raise HelperError("Muet indisponible : le réglage du volume n'est pas pris en charge.")
+            raise HelperError("Mute unavailable: volume control is not supported.")
         if self.premute_volume is not None:
             level, self.premute_volume = self.premute_volume, None
             await atv.audio.set_volume(float(level))
             return {"muted": False, "level": level}
         cur = atv.audio.volume
         if cur is None or float(cur) <= 0:
-            raise HelperError("Volume actuel inconnu ou déjà à zéro.")
+            raise HelperError("Current volume unknown or already zero.")
         self.premute_volume = float(cur)
         await atv.audio.set_volume(0.0)
         return {"muted": True, "level": 0.0}
@@ -433,7 +464,7 @@ class Helper:
     async def volume_get(self, **_) -> Any:
         return self.need().audio.volume
 
-    # ------------------------------------------------------------- lecture en cours
+    # ------------------------------------------------------------- now playing
     async def publish_playing(self, p) -> None:
         data = self.playing_dict(p)
         atv = self.atv
@@ -456,7 +487,11 @@ class Helper:
                     try:
                         art = await atv.metadata.artwork(width=300, height=None)
                         if art and art.bytes:
-                            self.last_artwork = base64.b64encode(art.bytes).decode("ascii")
+                            if len(art.bytes) > MAX_ARTWORK_BYTES:
+                                log.info("artwork skipped: %d bytes exceeds the %d byte cap",
+                                         len(art.bytes), MAX_ARTWORK_BYTES)
+                            else:
+                                self.last_artwork = base64.b64encode(art.bytes).decode("ascii")
                     except Exception as ex:
                         log.info("artwork: %s", ex)
                 data["artwork"] = self.last_artwork
@@ -500,22 +535,22 @@ class Helper:
             rid = req.get("id")
             cmd = str(req.get("cmd", ""))
             args = req.get("args") or {}
-            if cmd.startswith("_") or not hasattr(Helper, cmd) or cmd in ("handle", "start", "need", "on_lost", "publish_playing", "playing_dict", "feature_summary", "get_config", "initial_playing"):
-                raise HelperError(f"Commande inconnue : {cmd}")
+            if cmd not in ALLOWED_COMMANDS or not hasattr(Helper, cmd):
+                raise HelperError(f"Unknown command: {cmd}")
             result = await getattr(self, cmd)(**args)
             emit({"id": rid, "ok": True, "result": result})
         except exceptions.NotSupportedError:
-            emit({"id": rid, "ok": False, "error": "Fonction non prise en charge par cet appareil (appairage manquant ?)."})
+            emit({"id": rid, "ok": False, "error": "Feature not supported by this device (missing pairing?)."})
         except exceptions.BlockedStateError as ex:
-            emit({"id": rid, "ok": False, "error": f"Action indisponible dans l'état actuel : {ex}"})
+            emit({"id": rid, "ok": False, "error": f"Action unavailable in the current state: {ex}"})
         except exceptions.AuthenticationError as ex:
-            emit({"id": rid, "ok": False, "error": f"Authentification échouée : {ex}"})
+            emit({"id": rid, "ok": False, "error": f"Authentication failed: {ex}"})
         except HelperError as ex:
             emit({"id": rid, "ok": False, "error": str(ex)})
         except TypeError as ex:
-            emit({"id": rid, "ok": False, "error": f"Arguments invalides : {ex}"})
-        except Exception as ex:  # ne jamais planter
-            log.error("erreur: %s\n%s", ex, traceback.format_exc())
+            emit({"id": rid, "ok": False, "error": f"Invalid arguments: {ex}"})
+        except Exception as ex:  # never crash
+            log.error("error: %s\n%s", ex, traceback.format_exc())
             emit({"id": rid, "ok": False, "error": f"{type(ex).__name__}: {ex}"})
 
 
