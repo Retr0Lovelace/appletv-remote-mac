@@ -5,9 +5,11 @@ L'app est écrite en SwiftUI natif. Le protocole Apple (Companion / AirPlay, app
 [pyatv](https://pyatv.dev).
 
 <p align="center">
-  <img src="docs/telecommande.png" width="260" alt="La télécommande">
-  &nbsp;&nbsp;
-  <img src="docs/applications.png" width="260" alt="Toutes les applications">
+  <img src="docs/telecommande.png" width="240" alt="La télécommande">
+  &nbsp;
+  <img src="docs/lecture.png" width="240" alt="En cours de lecture">
+  &nbsp;
+  <img src="docs/applications.png" width="240" alt="Toutes les applications">
 </p>
 
 ## Télécharger
@@ -32,7 +34,8 @@ macOS 15 ou plus récent, Apple Silicon.
 - **Applications installées** sur l'Apple TV, sous forme de boutons ronds avec le logo de l'app en noir et blanc.
   Les logos viennent de l'App Store, et les apps Apple utilisent une icône système. Les favoris
   (Netflix, YouTube, Prime Video…) passent en premier.
-- **En cours de lecture** : pochette, titre et progression, avec ⏮ ⏯ ⏭. L'écran n'apparaît que pendant une lecture.
+- **En cours de lecture** : titre, artiste, app et progression, avec ⏮ ⏯ ⏭. L'écran n'apparaît que pendant une lecture.
+  La pochette s'affiche quand l'Apple TV la transmet, ce que certains modèles ne font pas.
 - **Envoi de texte** vers le clavier de l'Apple TV, pour la recherche ou les identifiants. Le champ s'allume quand un clavier est actif sur la TV.
 - **Raccourcis clavier** (inactifs dans le champ texte) :
 
