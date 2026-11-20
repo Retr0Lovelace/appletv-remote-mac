@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import AppKit
+import ServiceManagement
 
 enum ConnState: Equatable {
     case helperDown, idle, scanning, connecting, connected, lost
@@ -76,6 +77,8 @@ final class ATVController {
     var muted = false
     var activity = 0
     var icons: [String: NSImage] = [:]
+    var hideDock = UserDefaults.standard.bool(forKey: "hideDock")
+    var loginStatus: SMAppService.Status = SMAppService.mainApp.status
     @ObservationIgnored private var iconRequested = Set<String>()
 
     @ObservationIgnored private let helper = HelperClient()
@@ -137,6 +140,7 @@ final class ATVController {
             features = d["features"].asBools
             muted = false
             Task { await refreshApps() }
+            Task { await refreshPower() }
         case "disconnected":
             if state != .scanning { state = .idle }
         case "connection_lost":
@@ -243,6 +247,43 @@ final class ATVController {
             note = m.contains("Non connecté") ? "" : m
             if selected.map({ !$0.companionPaired }) == true { note = "Cette Apple TV n'est pas appairée. Ouvrez ⚙ → Appairer." }
         }
+    }
+
+    /// Demande l'état d'alimentation après la connexion (les notifications push peuvent tarder ou manquer).
+    private func refreshPower() async {
+        for delay in [0.5, 2.0, 5.0] {
+            try? await Task.sleep(for: .seconds(delay))
+            guard connected else { return }
+            if let r = try? await helper.request("power_state", timeout: 10), let s = r.string, s != "unknown" {
+                power = s
+                return
+            }
+        }
+    }
+
+    func setHideDock(_ on: Bool) {
+        hideDock = on
+        UserDefaults.standard.set(on, forKey: "hideDock")
+        NSApp.setActivationPolicy(on ? .accessory : .regular)
+        NSApp.activate()
+    }
+
+    func setLaunchAtLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+        } catch {
+            flashNote("Ouverture au démarrage impossible : \(error.localizedDescription)")
+        }
+        loginStatus = SMAppService.mainApp.status
+        if loginStatus == .requiresApproval {
+            flashNote("Approuvez l'app dans Réglages Système → Éléments de connexion.")
+            SMAppService.openSystemSettingsLoginItems()
+        }
+    }
+
+    private func flashNote(_ m: String) {
+        note = m
+        Task { try? await Task.sleep(for: .seconds(8)); if note == m { note = "" } }
     }
 
     func disconnect() async {

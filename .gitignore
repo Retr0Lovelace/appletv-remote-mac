@@ -6,3 +6,4 @@ pyatv.conf
 build/
 .DS_Store
 __pycache__/
+dist/

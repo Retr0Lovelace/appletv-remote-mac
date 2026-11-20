@@ -10,6 +10,17 @@ L'app est écrite en SwiftUI natif. Le protocole Apple (Companion / AirPlay, app
   <img src="docs/applications.png" width="260" alt="Toutes les applications">
 </p>
 
+## Télécharger
+
+Version prête à l'emploi (Python et pyatv sont inclus, aucun Xcode ni uv requis) :
+**[dernière version sur GitHub Releases](https://github.com/Retr0Lovelace/appletv-remote-mac/releases/latest)**.
+macOS 15 ou plus récent, Apple Silicon.
+
+1. Télécharge `Telecommande-AppleTV-<version>-macOS-arm64.zip` et décompresse-le.
+2. L'app n'est pas notariée : fais un clic droit sur « Télécommande Apple TV » → **Ouvrir**, puis confirme.
+   Sinon, dans le Terminal : `xattr -dr com.apple.quarantine "Télécommande Apple TV.app"`.
+3. Autorise l'accès au **Réseau local** quand macOS le demande, puis appaire ton Apple TV (voir plus bas).
+
 ## Fonctionnalités
 
 - **Pavé tactile** comme sur la Siri Remote :
@@ -36,16 +47,22 @@ L'app est écrite en SwiftUI natif. Le protocole Apple (Companion / AirPlay, app
 
 - **Fenêtre transparente** : seule la télécommande flotte sur le bureau. On la déplace en la tirant par l'aluminium.
   Clic droit = réglages, appairage, quitter.
+- **Réglages** (menu ⚙, clic droit, barre des menus) : « Ouvrir au démarrage » (si macOS demande une approbation,
+  Réglages Système → Éléments de connexion s'ouvre) et « Masquer l'icône du Dock » (mode barre des menus uniquement :
+  « Ouvrir la télécommande » depuis l'icône ramène la fenêtre au premier plan).
+- **Applications** : « Plus » affiche jusqu'à 3 rangées défilantes, adaptées à la hauteur de l'écran.
 - **Icône dans la barre des menus** : lecture/pause, volume, muet, veille.
 - **Plusieurs Apple TV** : un clic sur le nom en bas de la télécommande permet de changer d'appareil.
 
-## Prérequis
+## Compiler soi-même
+
+### Prérequis
 
 - macOS 15 ou plus récent, sur Apple Silicon.
 - **Xcode** installé. Les Command Line Tools seules ne fournissent pas le plugin de macros SwiftUI que `build.sh` utilise.
 - [uv](https://docs.astral.sh/uv/). `setup.sh` l'installe dans `~/.local/bin` s'il est absent.
 
-## Installation
+### Installation
 
 ```bash
 git clone https://github.com/Retr0Lovelace/appletv-remote-mac.git ~/AppleTVRemote
@@ -61,6 +78,15 @@ L'app lance l'assistant Python depuis le dossier du projet. Laisse-la dans `buil
 Au premier lancement, autorise l'accès au **Réseau local** quand macOS le demande
 (Réglages Système → Confidentialité et sécurité → Réseau local).
 
+## Fabriquer la version téléchargeable
+
+```bash
+./release.sh   # compile, embarque Python 3.12 + pyatv, signe en ad hoc, crée dist/Telecommande-AppleTV-<version>-macOS-arm64.zip
+```
+
+La version vient de `CFBundleShortVersionString` dans `Info.plist`. Ensuite : `gh release create vX.Y.Z dist/<zip>`.
+Hors du bundle (développement), l'app utilise le `.venv` du projet.
+
 ## Appairage
 
 <img src="docs/appairage.png" width="360" alt="Appairage" align="right">
@@ -69,8 +95,9 @@ Au premier lancement, autorise l'accès au **Réseau local** quand macOS le dema
 2. **Étape 1/2 (Companion)** : tape le code à 4 chiffres affiché sur la TV.
 3. **Étape 2/2 (AirPlay)** : tape le second code. Cette étape sert à l'affichage de la lecture en cours.
 
-Les identifiants sont enregistrés dans `pyatv.conf`, à la racine du projet. Ce fichier est ignoré par git :
-il contient des clés privées, ne le partage pas.
+Les identifiants sont enregistrés dans `~/Library/Application Support/Télécommande Apple TV/pyatv.conf`
+(partagé par la version téléchargée et la version compilée). Au premier lancement, un ancien `pyatv.conf` du projet
+est copié à cet endroit. Il contient des clés privées : ne le partage pas (il est ignoré par git).
 
 Si l'appairage est indiqué « désactivé », va sur l'Apple TV dans Réglages → AirPlay et HomeKit →
 Autoriser l'accès, et choisis « Toute personne sur le même réseau ».

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ServiceManagement
 
 struct ContentView: View {
     @Environment(ATVController.self) private var tv
@@ -98,18 +99,57 @@ struct ContentView: View {
 
     // MARK: apps
 
-    private var appsSection: some View {
-        let shown = showAllApps ? tv.apps : Array(tv.apps.prefix(6))
-        let rows = stride(from: 0, to: shown.count, by: 3).map { Array(shown[$0..<min($0 + 3, shown.count)]) }
-        return VStack(spacing: 8) {
-            if tv.apps.isEmpty {
-                Text("Applications indisponibles").font(.system(size: 10)).engraved()
-            }
+    private let rowHeight: CGFloat = appSize + 3 + 11   // bouton + espace + légende
+    private let rowGap: CGFloat = 8
+
+    /// Hauteur approximative de la télécommande sans la zone d'applications.
+    private var baseHeight: CGFloat { 800 + (tv.nowPlaying.visible ? 175 : 0) }
+
+    /// Nombre de rangées visibles quand « Plus » est ouvert : 3 au maximum, moins si l'écran est petit.
+    private var maxVisibleRows: Int {
+        let screenH = NSScreen.main?.visibleFrame.height ?? 800
+        let free = screenH - 24 - baseHeight
+        let rows = Int((free + rowGap) / (rowHeight + rowGap))
+        return min(3, max(1, rows))
+    }
+
+    private func appRows(_ apps: [ATVApp]) -> some View {
+        let rows = stride(from: 0, to: apps.count, by: 3).map { Array(apps[$0..<min($0 + 3, apps.count)]) }
+        return VStack(spacing: rowGap) {
             ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                 HStack(spacing: 10) {
                     ForEach(row) { AppButton(app: $0) }
                     if row.count < 3 { ForEach(0..<(3 - row.count), id: \.self) { _ in Color.clear.frame(width: appSize, height: 1) } }
                 }
+            }
+        }
+    }
+
+    private var appsSection: some View {
+        VStack(spacing: 8) {
+            if tv.apps.isEmpty {
+                Text("Applications indisponibles").font(.system(size: 10)).engraved()
+            }
+            if showAllApps {
+                let n = maxVisibleRows
+                let totalRows = (tv.apps.count + 2) / 3
+                let visible = min(n, totalRows)
+                let height = CGFloat(visible) * rowHeight + CGFloat(max(visible - 1, 0)) * rowGap
+                ScrollView(.vertical, showsIndicators: false) {
+                    appRows(tv.apps).padding(.bottom, totalRows > n ? 14 : 0)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(width: contentWidth + 10, height: height)
+                .mask(alignment: .top) {
+                    VStack(spacing: 0) {
+                        Rectangle().fill(.black)
+                        if totalRows > n {
+                            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: 16)
+                        }
+                    }
+                }
+            } else {
+                appRows(Array(tv.apps.prefix(6)))
             }
             if tv.apps.count > 6 {
                 Button(showAllApps ? "Moins" : "Plus") { withAnimation(.easeOut(duration: 0.2)) { showAllApps.toggle() } }
@@ -192,6 +232,8 @@ struct ContentView: View {
         Divider()
         Button("Oublier cet appareil", role: .destructive) { tv.forgetSelected() }.disabled(tv.selected == nil)
         Button("Redémarrer l'assistant") { tv.restartHelper() }
+        Divider()
+        SettingsToggles()
         Divider()
         Button("Quitter") { NSApp.terminate(nil) }
     }
@@ -362,4 +404,17 @@ struct PairingView: View {
     }
     private func num(_ p: String) -> Int { p == "companion" ? 1 : 2 }
     private func name(_ p: String) -> String { p == "companion" ? "Companion" : "AirPlay" }
+}
+
+/// Réglages communs (menu ⚙, clic droit, barre des menus).
+struct SettingsToggles: View {
+    @Environment(ATVController.self) private var tv
+
+    var body: some View {
+        Toggle(tv.loginStatus == .requiresApproval ? "Ouvrir au démarrage (à approuver)" : "Ouvrir au démarrage",
+               isOn: Binding(get: { tv.loginStatus == .enabled || tv.loginStatus == .requiresApproval },
+                             set: { tv.setLaunchAtLogin($0) }))
+        Toggle("Masquer l'icône du Dock",
+               isOn: Binding(get: { tv.hideDock }, set: { tv.setHideDock($0) }))
+    }
 }

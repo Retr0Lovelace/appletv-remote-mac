@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct AppleTVRemoteApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var tv = ATVController()
 
     init() { Snapshot.scheduleIfRequested() }
@@ -22,6 +23,32 @@ struct AppleTVRemoteApp: App {
     }
 }
 
+/// Délégué d'application : applique le mode « sans Dock » au lancement et garantit que « Quitter » aboutit toujours,
+/// même si une feuille (appairage…) est ouverte.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if UserDefaults.standard.bool(forKey: "hideDock") {
+            NSApp.setActivationPolicy(.accessory)
+            NSApp.activate()
+        }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated { Self.dismissSheets() }
+        return .terminateNow
+    }
+
+    @MainActor static func dismissSheets() {
+        if let tv = ATVController.current {
+            if tv.showPairing { tv.cancelPairing() }
+            tv.showPairing = false
+        }
+        for w in NSApp.windows {
+            for sheet in w.sheets { w.endSheet(sheet); sheet.orderOut(nil) }
+        }
+    }
+}
+
 struct MenuContent: View {
     @Environment(ATVController.self) private var tv
     @Environment(\.openWindow) private var openWindow
@@ -38,7 +65,15 @@ struct MenuContent: View {
         Button("Ouvrir la télécommande") {
             openWindow(id: "main")
             NSApp.activate()
+            // en mode « sans Dock » (accessory), on force la fenêtre au premier plan
+            DispatchQueue.main.async {
+                NSApp.activate()
+                for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil); w.orderFrontRegardless() }
+            }
         }
+        Divider()
+        SettingsToggles()
+        Divider()
         Button("Quitter") { NSApp.terminate(nil) }
     }
 }
@@ -73,6 +108,7 @@ enum Snapshot {
                 let url = URL(fileURLWithPath: dir).appendingPathComponent("window-\(n).png")
                 try? rep.representation(using: .png, properties: [:])?.write(to: url)
             }
+            AppDelegate.dismissSheets()
             NSApp.terminate(nil)
         }
     }

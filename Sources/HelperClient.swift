@@ -68,6 +68,14 @@ final class HelperClient {
     private var restartCount = 0
     private let reader = LineReader()
 
+    /// Où lancer l'assistant : Python embarqué dans l'app si présent, sinon l'environnement de développement (.venv).
+    struct Location {
+        let python: URL
+        let script: URL
+        let workDir: URL
+        let bundled: Bool
+    }
+
     static func projectRoot() -> URL {
         let fallback = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("AppleTVRemote")
         let bundle = Bundle.main.bundleURL
@@ -76,24 +84,70 @@ final class HelperClient {
         return FileManager.default.isExecutableFile(atPath: py.path) ? candidate : fallback
     }
 
+    static var supportDir: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Télécommande Apple TV")
+    }
+
+    static func locate() -> Location {
+        let fm = FileManager.default
+        if let res = Bundle.main.resourceURL {
+            let py = res.appendingPathComponent("python/bin/python3")
+            let script = res.appendingPathComponent("helper/atv_helper.py")
+            if fm.isExecutableFile(atPath: py.path), fm.fileExists(atPath: script.path) {
+                return Location(python: py, script: script, workDir: supportDir, bundled: true)
+            }
+        }
+        let root = projectRoot()
+        return Location(python: root.appendingPathComponent(".venv/bin/python"),
+                        script: root.appendingPathComponent("helper/atv_helper.py"),
+                        workDir: root, bundled: false)
+    }
+
+    /// Fichier d'identifiants partagé par toutes les versions de l'app. Copie (sans déplacer) l'ancien
+    /// `pyatv.conf` du projet la première fois.
+    static func storageFile(legacyRoot: URL?) -> URL {
+        let fm = FileManager.default
+        let dest = supportDir.appendingPathComponent("pyatv.conf")
+        try? fm.createDirectory(at: supportDir, withIntermediateDirectories: true,
+                                attributes: [.posixPermissions: 0o700])
+        if !fm.fileExists(atPath: dest.path) {
+            let candidates = [legacyRoot, fm.homeDirectoryForCurrentUser.appendingPathComponent("AppleTVRemote")]
+                .compactMap { $0?.appendingPathComponent("pyatv.conf") }
+            if let src = candidates.first(where: { fm.fileExists(atPath: $0.path) }) {
+                try? fm.copyItem(at: src, to: dest)
+                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dest.path)
+            }
+        }
+        return dest
+    }
+
     var isRunning: Bool { process?.isRunning ?? false }
 
     func start() {
         guard !isRunning else { return }
         stopping = false
-        let root = Self.projectRoot()
-        let python = root.appendingPathComponent(".venv/bin/python")
-        let script = root.appendingPathComponent("helper/atv_helper.py")
+        let loc = Self.locate()
+        let python = loc.python, script = loc.script
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
             onEvent?("helper_error", ["message": "Environnement Python absent. Lancez setup.sh."])
             return
         }
+        FileHandle.standardError.write(Data("assistant : \(python.path) (\(loc.bundled ? "embarqué" : "développement"))\n".utf8))
         let p = Process()
         p.executableURL = python
         p.arguments = ["-u", script.path]
-        p.currentDirectoryURL = root
+        let storage = Self.storageFile(legacyRoot: loc.bundled ? nil : loc.workDir)
+        try? FileManager.default.createDirectory(at: loc.workDir, withIntermediateDirectories: true)
+        p.currentDirectoryURL = loc.workDir
         var env = ProcessInfo.processInfo.environment
-        env["ATV_ROOT"] = root.path
+        env["ATV_ROOT"] = loc.workDir.path
+        env["ATV_STORAGE"] = storage.path
+        if loc.bundled {
+            env.removeValue(forKey: "PYTHONHOME")
+            env.removeValue(forKey: "PYTHONPATH")
+            env["PYTHONDONTWRITEBYTECODE"] = "1"   // ne pas modifier le bundle signé
+        }
         env["PYTHONUNBUFFERED"] = "1"
         p.environment = env
         let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()

@@ -32,7 +32,7 @@ logging.basicConfig(stream=sys.stderr, level=logging.INFO,
 log = logging.getLogger("atv_helper")
 
 ROOT = Path(os.environ.get("ATV_ROOT", str(Path.home() / "AppleTVRemote")))
-STORAGE_FILE = ROOT / "pyatv.conf"
+STORAGE_FILE = Path(os.environ.get("ATV_STORAGE") or (ROOT / "pyatv.conf"))
 
 PROTOCOLS = {"companion": Protocol.Companion, "airplay": Protocol.AirPlay,
              "mrp": Protocol.MRP, "raop": Protocol.RAOP, "dmap": Protocol.DMAP}
@@ -106,7 +106,7 @@ class Listener(PushListener, DeviceListener, PowerListener, AudioListener,
 class Helper:
     def __init__(self) -> None:
         self.loop = asyncio.get_running_loop()
-        ROOT.mkdir(parents=True, exist_ok=True)
+        STORAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
         self.storage = FileStorage(str(STORAGE_FILE), self.loop)
         self.configs: Dict[str, Any] = {}
         self.atv: Optional[pyatv.interface.AppleTV] = None
