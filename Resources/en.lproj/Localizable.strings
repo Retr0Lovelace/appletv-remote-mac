@@ -89,3 +89,33 @@
 "Microphone inaccessible: %@" = "Microphone inaccessible: %@";
 "Speech recognition denied. Allow it in System Settings → Privacy & Security → Speech Recognition." = "Speech recognition denied. Allow it in System Settings → Privacy & Security → Speech Recognition.";
 "Microphone denied. Allow it in System Settings → Privacy & Security → Microphone." = "Microphone denied. Allow it in System Settings → Privacy & Security → Microphone.";
+
+/* Updates */
+"Check for updates automatically" = "Check for updates automatically";
+"Check for Updates…" = "Check for Updates…";
+"Skip This Version" = "Skip This Version";
+"Later" = "Later";
+"Install and Relaunch" = "Install and Relaunch";
+"View release page" = "View release page";
+"You're up to date" = "You're up to date";
+"No release notes." = "No release notes.";
+"Downloading…" = "Downloading…";
+"Verifying signature…" = "Verifying signature…";
+"Installing…" = "Installing…";
+"Checking for updates…" = "Checking for updates…";
+"Apple TV Remote %@ is available (you have %@)" = "Apple TV Remote %@ is available (you have %@)";
+"Updates are disabled in development builds." = "Updates are disabled in development builds.";
+"Move Apple TV Remote to your Applications folder to enable updates." = "Move Apple TV Remote to your Applications folder to enable updates.";
+"Could not check for updates: %@" = "Could not check for updates: %@";
+"Update failed: %@" = "Update failed: %@";
+"Network error: %@" = "Network error: %@";
+"The update server sent an invalid response." = "The update server sent an invalid response.";
+"The update is too large." = "The update is too large.";
+"The downloaded update does not match its declared size." = "The downloaded update does not match its declared size.";
+"The update points to an untrusted address; it was refused." = "The update points to an untrusted address; it was refused.";
+"The release does not contain the expected update files." = "The release does not contain the expected update files.";
+"The update's signature is invalid. The download was deleted and nothing was installed." = "The update's signature is invalid. The download was deleted and nothing was installed.";
+"Could not open the update image." = "Could not open the update image.";
+"The update does not contain the expected app or version." = "The update does not contain the expected app or version.";
+"The update's code signature is invalid." = "The update's code signature is invalid.";
+"Could not prepare the update: %@" = "Could not prepare the update: %@";

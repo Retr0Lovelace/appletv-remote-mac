@@ -36,6 +36,9 @@ Requires macOS 15 or later on Apple Silicon.
 
 Then pair your Apple TV (see [Pairing](#pairing)).
 
+From 1.3.0 on, the app updates itself (see [Automatic updates](#automatic-updates)). **Version 1.2.0 has no updater,
+so if you run 1.2.0 you must install 1.3.0 manually once** (steps above); later versions are offered in the app.
+
 ## Features
 
 - **Touch pad** like the Siri Remote: drag = swipe, click in the centre = OK, long press = long OK, click on the ring = arrow,
@@ -51,7 +54,9 @@ Then pair your Apple TV (see [Pairing](#pairing)).
   without pressing Return. Recognition is strictly on-device (see [Privacy & security](#privacy--security)). It stops after
   about 2 s of silence, on a second click, or when the TV keyboard closes.
 - **Transparent window**: only the remote floats on the desktop; drag it by the aluminium. Right-click for settings.
-- **Settings** (⚙ menu, right-click, menu bar): open at login, hide the Dock icon (menu-bar-only mode).
+- **Settings** (⚙ menu, right-click, menu bar): open at login, hide the Dock icon (menu-bar-only mode), automatic update checks.
+- **Secure self-update**: the app checks GitHub once a day for a new release, downloads it, verifies its Ed25519 signature
+  and only then installs it and relaunches ([details](#automatic-updates)).
 - **Menu bar icon**: play/pause, volume, mute, sleep/wake.
 - **Several Apple TVs**: click the name at the bottom of the remote to switch device.
 
@@ -68,6 +73,27 @@ Inactive while typing in the text field.
 | Space | Play/Pause |
 | + / − | Volume |
 | ⌘D | Dictation (text field visible) |
+
+## Automatic updates
+
+Release builds check for a newer version 10 seconds after launch, then at most once every 24 hours while running
+(⚙ → **Check for updates automatically**, on by default; turn it off there, or use **Check for Updates…** for a manual check).
+When a newer release exists a sheet shows the release notes with **Install and Relaunch**, **Later** and **Skip This Version**.
+
+Because the app is ad-hoc signed (no Apple Developer ID), macOS cannot vouch for an update, so the app does it itself:
+
+1. The release `.dmg` must come with a `.dmg.sig` file: an **Ed25519 signature** (like Sparkle's EdDSA) made by the maintainer's
+   private key, which never leaves the maintainer's Keychain. The matching public key is embedded in the app.
+2. Downloads must use HTTPS from `github.com` (redirects only to `*.githubusercontent.com`), are limited to 300 MB and must match
+   the size declared by the release.
+3. The signature is checked **before anything is touched**. If it does not verify, the download is deleted and the update is refused;
+   there is no "install anyway" option.
+4. The image is then mounted read-only and the app inside must have the same bundle identifier, the announced version and a valid
+   code signature. It is copied next to the installed app and swapped in atomically by a small helper script after the app quits
+   (the old copy is restored if anything fails), then the app relaunches.
+
+Updates are only offered to the release app, and only when its folder is writable (so not from the mounted disk image: move it to
+Applications first). Development builds never self-update.
 
 ## Pairing
 
@@ -105,7 +131,8 @@ To produce the downloadable archive:
 ./release.sh   # builds, embeds Python 3.12 + pyatv, ad-hoc signs, writes dist/AppleTVRemote-<version>-macOS-arm64.dmg and .zip, each with a .sha256
 ```
 
-The version comes from `CFBundleShortVersionString` in `Info.plist`. Then: `gh release create vX.Y.Z dist/<zip> dist/<zip>.sha256`.
+The version comes from `CFBundleShortVersionString` in `Info.plist`. `release.sh` also signs the dmg with the update key
+(see [Maintainers](#maintainers)) and fails if signing fails.
 
 ### Locked dependencies
 
@@ -128,6 +155,8 @@ Sources/               SwiftUI app (Swift 6, strict concurrency)
   IconStore            app logos via the iTunes API, disk cache, black-and-white conversion
   ArtworkDecoder       size-checked now-playing artwork decoding
   Dictation            on-device speech recognition
+  Updater, UpdateView  signed self-update (check, download, Ed25519 verification, atomic install)
+tools/update-key.swift Ed25519 signing key in the login Keychain (generate / public / sign)
 Resources/*.lproj      localizations (en, fr)
 helper/atv_helper.py   asyncio helper around pyatv (scan, pairing, keys, swipe, text, apps...)
 ```
@@ -160,9 +189,51 @@ ATV_ENABLE_SNAPSHOT=1 SNAPSHOT_DEMO=1 "build/Apple TV Remote.app/Contents/MacOS/
 - **Network requests**: (1) the local network, to the Apple TV; (2) the iTunes Search API (`https://itunes.apple.com`) to fetch
   app logos, which sends the names / bundle ids of the apps installed on your Apple TV. Only HTTPS is used, artwork
   is accepted only from `*.mzstatic.com`, with size and dimension limits. Nothing else leaves your Mac.
+- **Update check**: once a day (and on manual request) the app contacts `api.github.com` (releases API of this repository, no
+  identifier is sent beyond a User-Agent with the app version) and, if you install an update, downloads it from `github.com`.
+  Updates are verified with an Ed25519 signature before installation (see [Automatic updates](#automatic-updates)).
+  Disable the daily check in ⚙ → *Check for updates automatically*.
 - The Python helper is launched in isolated mode with a minimal environment. Releases are checksummed but not notarized.
 
 See [SECURITY.md](SECURITY.md) to report a vulnerability.
+
+## Maintainers
+
+### Update signing key
+
+The update key is an Ed25519 key pair. The **private key lives only in the login Keychain** (generic password, service
+`com.retr0.appletvremote.update-signing`, account `ed25519`), never in the repository or on disk. The public key is embedded in
+the app (`ATVUpdatePublicKey` in `Info.plist`, with a constant fallback in `Sources/Updater.swift`).
+`tools/update-key.swift` is compiled on demand by `release.sh`:
+
+```bash
+swiftc -O -o build/update-key tools/update-key.swift
+build/update-key generate [--force]   # create the key (refuses to overwrite without --force), prints the public key
+build/update-key public               # print the base64 public key
+build/update-key sign <file>          # print the base64 signature of a file
+```
+
+**Back up the key.** Either export it from Keychain Access (search "update-signing"), or print it with
+`security find-generic-password -s com.retr0.appletvremote.update-signing -a ed25519 -w` and store it in a password manager
+(the output is the secret key material, never paste it anywhere public). If the key is lost or replaced, installed apps reject
+every new release, and users must reinstall manually once from the Releases page.
+
+### Releasing
+
+1. Bump `CFBundleShortVersionString` and `CFBundleVersion` in `Info.plist`.
+2. `./release.sh` writes to `dist/`: the `.dmg`, `.dmg.sha256`, `.dmg.sig`, `.zip` and `.zip.sha256`.
+3. Commit and push, then publish all five files (the updater needs the exact names `AppleTVRemote-<v>-macOS-arm64.dmg` and `.dmg.sig`):
+   ```bash
+   gh release create vX.Y.Z dist/AppleTVRemote-X.Y.Z-macOS-arm64.{dmg,dmg.sha256,dmg.sig,zip,zip.sha256} \
+     --title "Apple TV Remote X.Y.Z" --notes-file notes.md --latest
+   ```
+   The release must not be a draft or prerelease: the updater ignores those.
+
+### Testing the updater
+
+With `ATV_ENABLE_SNAPSHOT=1`, `ATV_UPDATE_FEED=http://127.0.0.1:<port>/latest.json` points the app at a local fake releases
+feed (assets from `http://127.0.0.1` are then accepted) and `ATV_UPDATE_AUTOINSTALL=1` installs without the sheet. These hooks
+are ignored otherwise.
 
 ## Troubleshooting
 

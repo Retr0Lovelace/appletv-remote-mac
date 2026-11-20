@@ -14,8 +14,9 @@
 	<key>CFBundleName</key><string>Apple TV Remote</string>
 	<key>CFBundleDisplayName</key><string>Apple TV Remote</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleShortVersionString</key><string>1.2.0</string>
-	<key>CFBundleVersion</key><string>3</string>
+	<key>CFBundleShortVersionString</key><string>1.3.0</string>
+	<key>CFBundleVersion</key><string>4</string>
+	<key>ATVUpdatePublicKey</key><string>nMZjtN03OHaNqXH9OkbKqGejO/R7puGa1+LOCtfcF+c=</string>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
 	<key>LSMinimumSystemVersion</key><string>15.0</string>
 	<key>NSHighResolutionCapable</key><true/>

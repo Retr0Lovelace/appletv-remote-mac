@@ -17,6 +17,7 @@ struct ContentView: View {
 
     var body: some View {
         @Bindable var tv = tv
+        @Bindable var updater = Updater.shared
         return ZStack {
             RemoteBody().overlay(WindowDragHandle())
             VStack(spacing: 0) {
@@ -50,7 +51,8 @@ struct ContentView: View {
         .background(WindowAccessor())
         .preferredColorScheme(.dark)
         .sheet(isPresented: $tv.showPairing) { PairingView() }
-        .onAppear { tv.start(); installMonitor(); setupDictation() }
+        .sheet(isPresented: $updater.showSheet) { UpdateSheet() }
+        .onAppear { tv.start(); installMonitor(); setupDictation(); Updater.shared.startScheduling() }
         .onDisappear { if let m = monitor { NSEvent.removeMonitor(m); monitor = nil } }
         .animation(.easeOut(duration: 0.25), value: tv.textVisible)
         .onChange(of: tv.keyboardFocused) { _, focused in
@@ -452,6 +454,7 @@ struct PairingView: View {
 /// Shared settings (⚙ menu, right-click, menu bar).
 struct SettingsToggles: View {
     @Environment(ATVController.self) private var tv
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Toggle(tv.loginStatus == .requiresApproval ? String(localized: "Open at login (needs approval)") : String(localized: "Open at login"),
@@ -459,5 +462,12 @@ struct SettingsToggles: View {
                              set: { tv.setLaunchAtLogin($0) }))
         Toggle("Hide Dock icon",
                isOn: Binding(get: { tv.hideDock }, set: { tv.setHideDock($0) }))
+        Toggle("Check for updates automatically",
+               isOn: Binding(get: { Updater.shared.autoCheck }, set: { Updater.shared.autoCheck = $0 }))
+        Button("Check for Updates…") {
+            openWindow(id: "main")
+            Updater.shared.checkNow()
+        }
+        .disabled(Updater.shared.busy)
     }
 }

@@ -27,6 +27,7 @@ struct AppleTVRemoteApp: App {
 /// even if a sheet (pairing...) is open.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated { Updater.shared.startScheduling() }
         if UserDefaults.standard.bool(forKey: "hideDock") {
             NSApp.setActivationPolicy(.accessory)
             NSApp.activate()

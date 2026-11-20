@@ -73,7 +73,20 @@ ln -s /Applications "$STAGE/Applications"
 /usr/bin/hdiutil create -quiet -volname "Apple TV Remote" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "dist/$DMG"
 rm -rf "$STAGE"
 
-# 9. checksums; then drop the unpacked app so Launch Services does not list a second copy
+# 9. Ed25519 signature of the dmg (private key lives only in the login Keychain, see tools/update-key.swift)
+if [ ! -x build/update-key ] || [ tools/update-key.swift -nt build/update-key ]; then
+  swiftc -O -o build/update-key tools/update-key.swift
+fi
+EMBEDDED_KEY=$(/usr/libexec/PlistBuddy -c "Print :ATVUpdatePublicKey" Info.plist)
+if [ "$(build/update-key public)" != "$EMBEDDED_KEY" ]; then
+  echo "error: the Keychain signing key does not match ATVUpdatePublicKey in Info.plist" >&2
+  exit 1
+fi
+SIG=$(build/update-key sign "dist/$DMG") || { echo "error: signing the dmg failed" >&2; exit 1; }
+[ -n "$SIG" ] || { echo "error: empty signature" >&2; exit 1; }
+printf '%s\n' "$SIG" > "dist/$DMG.sig"
+
+# 10. checksums; then drop the unpacked app so Launch Services does not list a second copy
 (cd dist && /usr/bin/shasum -a 256 "$ZIP" > "$ZIP.sha256" && /usr/bin/shasum -a 256 "$DMG" > "$DMG.sha256")
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$APP" 2>/dev/null || true
 rm -rf "$APP"

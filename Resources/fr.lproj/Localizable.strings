@@ -89,3 +89,33 @@
 "Microphone inaccessible: %@" = "Micro inaccessible : %@";
 "Speech recognition denied. Allow it in System Settings → Privacy & Security → Speech Recognition." = "Reconnaissance vocale refusée. Autorisez-la dans Réglages Système → Confidentialité et sécurité → Reconnaissance vocale.";
 "Microphone denied. Allow it in System Settings → Privacy & Security → Microphone." = "Micro refusé. Autorisez-le dans Réglages Système → Confidentialité et sécurité → Microphone.";
+
+/* Updates */
+"Check for updates automatically" = "Rechercher les mises à jour automatiquement";
+"Check for Updates…" = "Rechercher des mises à jour…";
+"Skip This Version" = "Ignorer cette version";
+"Later" = "Plus tard";
+"Install and Relaunch" = "Installer et relancer";
+"View release page" = "Voir la page de la version";
+"You're up to date" = "Vous êtes à jour";
+"No release notes." = "Aucune note de version.";
+"Downloading…" = "Téléchargement…";
+"Verifying signature…" = "Vérification de la signature…";
+"Installing…" = "Installation…";
+"Checking for updates…" = "Recherche de mises à jour…";
+"Apple TV Remote %@ is available (you have %@)" = "Télécommande Apple TV %@ est disponible (vous avez %@)";
+"Updates are disabled in development builds." = "Les mises à jour sont désactivées dans les versions de développement.";
+"Move Apple TV Remote to your Applications folder to enable updates." = "Déplacez Apple TV Remote dans votre dossier Applications pour activer les mises à jour.";
+"Could not check for updates: %@" = "Impossible de rechercher les mises à jour : %@";
+"Update failed: %@" = "Échec de la mise à jour : %@";
+"Network error: %@" = "Erreur réseau : %@";
+"The update server sent an invalid response." = "Le serveur de mises à jour a renvoyé une réponse invalide.";
+"The update is too large." = "La mise à jour est trop volumineuse.";
+"The downloaded update does not match its declared size." = "La mise à jour téléchargée ne correspond pas à sa taille déclarée.";
+"The update points to an untrusted address; it was refused." = "La mise à jour pointe vers une adresse non fiable ; elle a été refusée.";
+"The release does not contain the expected update files." = "La version ne contient pas les fichiers de mise à jour attendus.";
+"The update's signature is invalid. The download was deleted and nothing was installed." = "La signature de la mise à jour est invalide. Le téléchargement a été supprimé et rien n'a été installé.";
+"Could not open the update image." = "Impossible d'ouvrir l'image de la mise à jour.";
+"The update does not contain the expected app or version." = "La mise à jour ne contient pas l'app ou la version attendue.";
+"The update's code signature is invalid." = "La signature de code de la mise à jour est invalide.";
+"Could not prepare the update: %@" = "Impossible de préparer la mise à jour : %@";
