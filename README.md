@@ -19,16 +19,17 @@ Ready-to-run build (Python and pyatv are bundled, no Xcode or uv needed):
 **[latest release on GitHub](https://github.com/Retr0Lovelace/appletv-remote-mac/releases/latest)**.
 Requires macOS 15 or later on Apple Silicon.
 
-1. Download `AppleTVRemote-<version>-macOS-arm64.zip` and its `.sha256` file from the Releases page.
+1. Download **`AppleTVRemote-<version>-macOS-arm64.dmg`** and its `.sha256` file from the Releases page
+   (a `.zip` with the same app is also provided).
 2. Verify the checksum in Terminal, from the folder containing both files, and check that it prints `OK`:
    ```bash
-   shasum -a 256 -c AppleTVRemote-<version>-macOS-arm64.zip.sha256
+   shasum -a 256 -c AppleTVRemote-<version>-macOS-arm64.dmg.sha256
    ```
-3. Unzip, then **right-click "Apple TV Remote" → Open** and confirm. The app is ad-hoc signed but **not notarized**
+3. Open the `.dmg` and drag **Apple TV Remote** onto the **Applications** shortcut.
+4. In Applications, **right-click "Apple TV Remote" → Open** and confirm. The app is ad-hoc signed but **not notarized**
    (no Apple Developer ID), so Gatekeeper asks once.
-4. Fallback only if right-click → Open does not work: `xattr -dr com.apple.quarantine "Apple TV Remote.app"`.
-   This disables a macOS safety check, so only do it for a zip downloaded from the official Releases page whose
-   checksum matched.
+   Fallback only if right-click → Open does not work: `xattr -dr com.apple.quarantine "/Applications/Apple TV Remote.app"`.
+   This disables a macOS safety check, so only do it for a download from the official Releases page whose checksum matched.
 5. Grant the permissions macOS asks for:
    - **Local Network** at first launch (System Settings → Privacy & Security → Local Network), to find and control the Apple TV.
    - **Microphone** and **Speech Recognition** on first use of dictation. They are used for dictation only.
@@ -101,7 +102,7 @@ not writable by others). Keep the app in `build/`, or clone the project to `~/Ap
 To produce the downloadable archive:
 
 ```bash
-./release.sh   # builds, embeds Python 3.12 + pyatv, ad-hoc signs, writes dist/AppleTVRemote-<version>-macOS-arm64.zip and .sha256
+./release.sh   # builds, embeds Python 3.12 + pyatv, ad-hoc signs, writes dist/AppleTVRemote-<version>-macOS-arm64.dmg and .zip, each with a .sha256
 ```
 
 The version comes from `CFBundleShortVersionString` in `Info.plist`. Then: `gh release create vX.Y.Z dist/<zip> dist/<zip>.sha256`.

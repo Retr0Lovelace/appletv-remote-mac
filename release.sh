@@ -1,12 +1,13 @@
 #!/bin/bash
-# Builds a self-contained archive (Python 3.12 + pyatv embedded): dist/AppleTVRemote-<version>-macOS-arm64.zip
-# plus its SHA-256 checksum file.
+# Builds a self-contained app (Python 3.12 + pyatv embedded) and packages it as
+# dist/AppleTVRemote-<version>-macOS-arm64.dmg and .zip, each with a SHA-256 checksum file.
 set -euo pipefail
 cd "$(dirname "$0")"
 PROJECT="$PWD"
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Info.plist)
 NAME="Apple TV Remote.app"
 ZIP="AppleTVRemote-${VERSION}-macOS-arm64.zip"
+DMG="AppleTVRemote-${VERSION}-macOS-arm64.dmg"
 
 # 1. compile, then copy into dist/
 ./build.sh
@@ -62,9 +63,20 @@ done < <(find "$APP" -type f -not -path "*/_CodeSignature/*")
 /usr/bin/codesign --force -s - "$APP"
 /usr/bin/codesign --verify --deep "$APP" && echo "signature OK"
 
-# 7. archive (no resource forks or extended attributes) and checksum
+# 7. zip archive (no resource forks or extended attributes)
 (cd dist && /usr/bin/ditto -c -k --norsrc --noextattr --keepParent "$NAME" "$ZIP")
-(cd dist && /usr/bin/shasum -a 256 "$ZIP" > "$ZIP.sha256")
-du -h "dist/$ZIP"
-cat "dist/$ZIP.sha256"
-echo "OK: dist/$ZIP"
+
+# 8. disk image: the app next to an /Applications shortcut, to install by drag and drop
+STAGE=$(mktemp -d)
+/usr/bin/ditto --norsrc --noextattr "$APP" "$STAGE/$NAME"
+ln -s /Applications "$STAGE/Applications"
+/usr/bin/hdiutil create -quiet -volname "Apple TV Remote" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "dist/$DMG"
+rm -rf "$STAGE"
+
+# 9. checksums; then drop the unpacked app so Launch Services does not list a second copy
+(cd dist && /usr/bin/shasum -a 256 "$ZIP" > "$ZIP.sha256" && /usr/bin/shasum -a 256 "$DMG" > "$DMG.sha256")
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$APP" 2>/dev/null || true
+rm -rf "$APP"
+du -h "dist/$DMG" "dist/$ZIP"
+cat "dist/$DMG.sha256" "dist/$ZIP.sha256"
+echo "OK: dist/$DMG, dist/$ZIP"
