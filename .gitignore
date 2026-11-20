@@ -1,0 +1,8 @@
+# identifiants d'appairage (clés privées) — ne jamais publier
+pyatv.conf
+*.conf
+
+.venv/
+build/
+.DS_Store
+__pycache__/
